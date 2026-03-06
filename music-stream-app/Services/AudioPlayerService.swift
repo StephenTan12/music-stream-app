@@ -9,34 +9,11 @@ import MediaPlayer
 import Observation
 import Combine
 import UIKit
+import os
 
-// MARK: - API Configuration
+private let logger = Logger(subsystem: "com.music-stream-app", category: "AudioPlayer")
 
-enum APIConfig {
-    static var baseURL: String = "http://localhost:8000"
-    
-    enum Endpoints {
-        static func streamSong(videoId: String) -> String {
-            return "\(baseURL)/songs/stream/\(videoId)"
-        }
-        
-        static func getSong(videoId: String) -> String {
-            return "\(baseURL)/songs/\(videoId)"
-        }
-        
-        static func downloadSong(videoId: String) -> String {
-            return "\(baseURL)/songs/\(videoId)"
-        }
-        
-        static func deleteSong(videoId: String) -> String {
-            return "\(baseURL)/songs/\(videoId)"
-        }
-        
-        static func getSongs(page: Int, pageSize: Int) -> String {
-            return "\(baseURL)/songs?page=\(page)&page_size=\(pageSize)"
-        }
-    }
-}
+// MARK: - API Configuration (uses AppConfig)
 
 enum PlaybackMode: String, CaseIterable {
     case linear = "Linear"
@@ -84,6 +61,53 @@ enum PlaybackError: LocalizedError, Equatable {
     }
 }
 
+// MARK: - Persisted Playback State
+
+struct PersistedSong: Codable {
+    let id: String
+    let videoId: String?
+    let title: String
+    let artist: String
+    let album: String
+    let duration: TimeInterval
+    let streamURL: String
+    let artworkURL: String?
+    
+    init(from song: Song) {
+        self.id = song.id.uuidString
+        self.videoId = song.videoId
+        self.title = song.title
+        self.artist = song.artist
+        self.album = song.album
+        self.duration = song.duration
+        self.streamURL = song.streamURL
+        self.artworkURL = song.artworkURL
+    }
+    
+    func toSong() -> Song {
+        Song(
+            id: UUID(uuidString: id) ?? UUID(),
+            videoId: videoId,
+            title: title,
+            artist: artist,
+            album: album,
+            duration: duration,
+            streamURL: streamURL,
+            artworkURL: artworkURL
+        )
+    }
+}
+
+struct PersistedPlaybackState: Codable {
+    let currentSong: PersistedSong?
+    let queue: [PersistedSong]
+    let originalQueue: [PersistedSong]
+    let currentIndex: Int
+    let currentTime: TimeInterval
+    let playbackMode: String
+    let repeatMode: String
+}
+
 @Observable
 @MainActor
 final class AudioPlayerService {
@@ -97,7 +121,9 @@ final class AudioPlayerService {
     private var itemObservers: [NSObjectProtocol] = []
     private var artworkCache: [String: UIImage] = [:]
     private var artworkAccessOrder: [String] = []
-    private let maxArtworkCacheSize = 20
+    private let maxArtworkCacheSize = AppConfig.Cache.maxArtworkCacheSize
+    
+    private static let playbackStateKey = "persistedPlaybackState"
     
     // Playback state
     var isPlaying: Bool = false
@@ -124,14 +150,20 @@ final class AudioPlayerService {
             } else {
                 restoreOriginalQueue()
             }
+            savePlaybackState()
         }
     }
-    var repeatMode: RepeatMode = .none
+    var repeatMode: RepeatMode = .none {
+        didSet {
+            savePlaybackState()
+        }
+    }
     
     private init() {
         setupAudioSession()
         setupRemoteTransportControls()
         setupInterruptionHandling()
+        restorePlaybackState()
     }
     
     func clearError() {
@@ -147,7 +179,7 @@ final class AudioPlayerService {
             try audioSession.setCategory(.playback, mode: .default, options: [])
             try audioSession.setActive(true)
         } catch {
-            print("Failed to setup audio session: \(error)")
+            logger.error("Failed to setup audio session: \(error.localizedDescription)")
         }
     }
     
@@ -271,6 +303,7 @@ final class AudioPlayerService {
         observePlayerItem()
         updateNowPlayingInfo()
         fetchArtworkForNowPlaying(song: song)
+        savePlaybackState()
     }
     
     private func setError(_ error: PlaybackError) {
@@ -326,6 +359,8 @@ final class AudioPlayerService {
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
     }
     
+    private var lastSaveTime: TimeInterval = 0
+    
     private func setupTimeObserver() {
         let interval = CMTime(seconds: 0.5, preferredTimescale: CMTimeScale(NSEC_PER_SEC))
         timeObserver = player?.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
@@ -337,6 +372,11 @@ final class AudioPlayerService {
                     self.duration = duration
                 }
                 self.updateNowPlayingInfo()
+                
+                if abs(seconds - self.lastSaveTime) >= 5 {
+                    self.lastSaveTime = seconds
+                    self.savePlaybackState()
+                }
             }
         }
     }
@@ -436,6 +476,7 @@ final class AudioPlayerService {
         let cmTime = CMTime(seconds: time, preferredTimescale: CMTimeScale(NSEC_PER_SEC))
         player?.seek(to: cmTime, toleranceBefore: .zero, toleranceAfter: .zero)
         currentTime = time
+        savePlaybackState()
     }
     
     func playNext() {
@@ -530,21 +571,23 @@ final class AudioPlayerService {
         if !originalQueue.contains(where: { $0.id == song.id }) {
             originalQueue.append(song)
         }
+        savePlaybackState()
     }
     
     func playFromQueue(at index: Int) {
-        guard index >= 0, index < queue.count else { return }
+        guard index < queue.count else { return }
         currentIndex = index
         loadSong(queue[index])
         play()
     }
     
     func removeFromQueue(at index: Int) {
-        guard index >= 0, index < queue.count, index != currentIndex else { return }
+        guard index < queue.count, index != currentIndex else { return }
         queue.remove(at: index)
         if index < currentIndex {
             currentIndex -= 1
         }
+        savePlaybackState()
     }
     
     func syncQueueWithPlaylist(_ playlist: [Song]) {
@@ -565,6 +608,79 @@ final class AudioPlayerService {
                 currentIndex = 0
                 cleanup()
             }
+        }
+        savePlaybackState()
+    }
+    
+    // MARK: - State Persistence
+    
+    func savePlaybackState() {
+        let state = PersistedPlaybackState(
+            currentSong: currentSong.map { PersistedSong(from: $0) },
+            queue: queue.map { PersistedSong(from: $0) },
+            originalQueue: originalQueue.map { PersistedSong(from: $0) },
+            currentIndex: currentIndex,
+            currentTime: currentTime,
+            playbackMode: playbackMode.rawValue,
+            repeatMode: repeatMode.rawValue
+        )
+        
+        if let encoded = try? JSONEncoder().encode(state) {
+            UserDefaults.standard.set(encoded, forKey: Self.playbackStateKey)
+        }
+    }
+    
+    private func restorePlaybackState() {
+        guard let data = UserDefaults.standard.data(forKey: Self.playbackStateKey),
+              let state = try? JSONDecoder().decode(PersistedPlaybackState.self, from: data) else {
+            return
+        }
+        
+        if let persistedSong = state.currentSong {
+            currentSong = persistedSong.toSong()
+        }
+        queue = state.queue.map { $0.toSong() }
+        originalQueue = state.originalQueue.map { $0.toSong() }
+        currentIndex = state.currentIndex
+        currentTime = state.currentTime
+        
+        if let mode = PlaybackMode(rawValue: state.playbackMode) {
+            playbackMode = mode
+        }
+        if let mode = RepeatMode(rawValue: state.repeatMode) {
+            repeatMode = mode
+        }
+        
+        if let song = currentSong {
+            loadSongForRestore(song, seekTo: state.currentTime)
+        }
+    }
+    
+    private func loadSongForRestore(_ song: Song, seekTo time: TimeInterval) {
+        clearError()
+        
+        currentSong = song
+        isLoading = true
+        isBuffering = true
+        
+        guard let url = URL(string: song.streamURL) else {
+            setError(.invalidURL)
+            isLoading = false
+            isBuffering = false
+            return
+        }
+        
+        playerItem = AVPlayerItem(url: url)
+        player = AVPlayer(playerItem: playerItem)
+        
+        setupTimeObserver()
+        observePlayerItem()
+        updateNowPlayingInfo()
+        fetchArtworkForNowPlaying(song: song)
+        
+        if time > 0 {
+            let cmTime = CMTime(seconds: time, preferredTimescale: CMTimeScale(NSEC_PER_SEC))
+            player?.seek(to: cmTime, toleranceBefore: .zero, toleranceAfter: .zero)
         }
     }
     

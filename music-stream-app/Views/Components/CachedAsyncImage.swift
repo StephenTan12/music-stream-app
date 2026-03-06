@@ -4,12 +4,16 @@
 //
 
 import SwiftUI
+import UIKit
+import os
+
+private let logger = Logger(subsystem: "com.music-stream-app", category: "ImageCache")
 
 actor ImageCache {
     static let shared = ImageCache()
     
     private var cache: [URL: Image] = [:]
-    private let maxCacheSize = 50
+    private let maxCacheSize = AppConfig.Cache.maxImageCacheSize
     private var accessOrder: [URL] = []
     
     func image(for url: URL) -> Image? {
@@ -83,7 +87,7 @@ struct CachedAsyncImage<Content: View, Placeholder: View>: View {
                 }
             }
         } catch {
-            // Image load failed - keep showing placeholder
+            logger.debug("Image load failed for \(url.absoluteString): \(error.localizedDescription)")
         }
     }
 }

@@ -227,8 +227,8 @@ struct NowPlayingView: View {
     
     private func finishSeeking() {
         Task { @MainActor in
-            for _ in 0..<10 {
-                try? await Task.sleep(for: .milliseconds(50))
+            for _ in 0..<AppConfig.Playback.seekPollingIterations {
+                try? await Task.sleep(for: .milliseconds(AppConfig.Playback.seekPollingIntervalMs))
                 let currentProgress = audioPlayer.progress
                 let targetProgress = dragProgress
                 if abs(currentProgress - targetProgress) < 0.02 {

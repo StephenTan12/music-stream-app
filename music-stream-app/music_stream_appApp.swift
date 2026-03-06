@@ -5,11 +5,17 @@
 
 import SwiftUI
 import SwiftData
-import AVFoundation
+import os
+
+private let logger = Logger(subsystem: "com.music-stream-app", category: "App")
 
 @main
 struct music_stream_appApp: App {
-    var sharedModelContainer: ModelContainer = {
+    @State private var modelContainerError: Error?
+    
+    let sharedModelContainer: ModelContainer?
+    
+    init() {
         let schema = Schema([
             Playlist.self,
             Song.self,
@@ -17,31 +23,39 @@ struct music_stream_appApp: App {
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
         
         do {
-            return try ModelContainer(for: schema, configurations: [modelConfiguration])
+            sharedModelContainer = try ModelContainer(for: schema, configurations: [modelConfiguration])
         } catch {
-            fatalError("Could not create ModelContainer: \(error)")
+            logger.error("Could not create ModelContainer: \(error.localizedDescription)")
+            sharedModelContainer = nil
+            modelContainerError = error
         }
-    }()
-    
-    init() {
-        configureAudioSession()
     }
     
     var body: some Scene {
         WindowGroup {
-            ContentView()
-                .preferredColorScheme(.dark)
+            if let container = sharedModelContainer {
+                ContentView()
+                    .modelContainer(container)
+            } else {
+                DataErrorView(error: modelContainerError)
+            }
         }
-        .modelContainer(sharedModelContainer)
     }
+}
+
+struct DataErrorView: View {
+    let error: Error?
     
-    private func configureAudioSession() {
-        do {
-            let audioSession = AVAudioSession.sharedInstance()
-            try audioSession.setCategory(.playback, mode: .default, options: [])
-            try audioSession.setActive(true)
-        } catch {
-            print("Failed to configure audio session: \(error)")
+    var body: some View {
+        ContentUnavailableView {
+            Label("Data Error", systemImage: "exclamationmark.triangle")
+        } description: {
+            Text("Failed to load app data. Please restart the app or contact support.")
+            if let error = error {
+                Text(error.localizedDescription)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 }

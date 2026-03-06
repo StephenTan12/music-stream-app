@@ -56,19 +56,7 @@ struct PlaylistRowView: View {
                     .resizable()
                     .aspectRatio(contentMode: .fill)
             } placeholder: {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(
-                        LinearGradient(
-                            colors: [Color.accentColor.opacity(0.6), Color.accentColor.opacity(0.3)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .overlay {
-                        Image(systemName: "music.note.list")
-                            .font(.title2)
-                            .foregroundStyle(.white)
-                    }
+                GradientPlaceholderView(iconSize: 24, cornerRadius: 8)
             }
             .frame(width: 60, height: 60)
             .clipShape(RoundedRectangle(cornerRadius: 8))

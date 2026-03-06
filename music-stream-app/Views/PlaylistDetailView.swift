@@ -115,19 +115,7 @@ struct PlaylistDetailView: View {
                         .resizable()
                         .aspectRatio(contentMode: .fill)
                 } placeholder: {
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(
-                            LinearGradient(
-                                colors: [Color.accentColor.opacity(0.6), Color.accentColor.opacity(0.3)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                        .overlay {
-                            Image(systemName: "music.note.list")
-                                .font(.system(size: 50))
-                                .foregroundStyle(.white)
-                        }
+                    GradientPlaceholderView()
                 }
                 .frame(width: 200, height: 200)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
@@ -211,10 +199,11 @@ struct PlaylistDetailView: View {
     }
     
     private func playAll(shuffle: Bool) {
-        guard !playlist.songs.isEmpty else { return }
+        guard !playlist.songs.isEmpty,
+              let songToPlay = shuffle ? playlist.songs.randomElement() : playlist.songs.first else {
+            return
+        }
         audioPlayer.playbackMode = shuffle ? .shuffle : .linear
-        
-        let songToPlay = shuffle ? playlist.songs.randomElement()! : playlist.songs.first!
         audioPlayer.loadAndPlay(song: songToPlay, from: playlist.songs)
     }
     

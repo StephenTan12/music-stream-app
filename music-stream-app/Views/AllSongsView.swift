@@ -77,19 +77,7 @@ struct AllSongsView: View {
     private var headerSection: some View {
         Section {
             VStack(spacing: 16) {
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(
-                        LinearGradient(
-                            colors: [Color.accentColor.opacity(0.6), Color.accentColor.opacity(0.3)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .overlay {
-                        Image(systemName: "music.note.list")
-                            .font(.system(size: 50))
-                            .foregroundStyle(.white)
-                    }
+                GradientPlaceholderView()
                     .frame(width: 200, height: 200)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                     .shadow(color: .black.opacity(0.2), radius: 10, x: 0, y: 5)
@@ -203,10 +191,11 @@ struct AllSongsView: View {
     }
     
     private func playAll(shuffle: Bool) {
-        guard !songService.songs.isEmpty else { return }
+        guard !songService.songs.isEmpty,
+              let songToPlay = shuffle ? songService.songs.randomElement() : songService.songs.first else {
+            return
+        }
         audioPlayer.playbackMode = shuffle ? .shuffle : .linear
-        
-        let songToPlay = shuffle ? songService.songs.randomElement()! : songService.songs.first!
         audioPlayer.loadAndPlay(song: songToPlay, from: songService.songs)
     }
 }

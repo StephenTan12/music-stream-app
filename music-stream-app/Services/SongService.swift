@@ -66,7 +66,7 @@ class SongService: ObservableObject {
     
     var hasMorePages: Bool { currentPage < totalPages }
     
-    private let pageSize = 20
+    private let pageSize = AppConfig.API.defaultPageSize
     
     private init() {}
     
@@ -83,7 +83,7 @@ class SongService: ObservableObject {
         
         defer { isLoading = false }
         
-        let urlString = APIConfig.Endpoints.getSongs(page: page, pageSize: pageSize)
+        let urlString = AppConfig.API.Endpoints.getSongs(page: page, pageSize: pageSize)
         guard let url = URL(string: urlString) else {
             error = .invalidURL
             return
