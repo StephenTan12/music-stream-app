@@ -81,25 +81,20 @@ struct SongRowView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .accessibilityHidden(true)
-                
-                if showMenu {
-                    Menu {
-                        Button {
-                            AudioPlayerService.shared.addToQueue(song)
-                        } label: {
-                            Label("Add to Queue", systemImage: "text.badge.plus")
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .foregroundStyle(.secondary)
-                            .frame(width: 30, height: 30)
-                    }
-                    .accessibilityLabel("More options for \(song.title)")
-                }
             }
             .padding(.vertical, 4)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            if showMenu {
+                Button {
+                    AudioPlayerService.shared.addToQueue(song)
+                } label: {
+                    Label("Add to Queue", systemImage: "text.badge.plus")
+                }
+            }
+        }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityLabel)
         .accessibilityHint(isCurrentSong ? (isActuallyPlaying ? "Currently playing" : "Paused") : "Double tap to play")

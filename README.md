@@ -4,7 +4,9 @@ A SwiftUI-based iOS music streaming application that plays audio from remote .mp
 
 ## Features
 
-- **Playlist Management** - Create, edit, and delete playlists to organize your music
+- **Backend Playlist Sync** - Automatically sync playlists from backend API on app launch and pull-to-refresh
+- **System Playlists** - Read-only system playlists (like "All Songs") shown prominently with star badge
+- **Playlist Management** - View backend-synced playlists with full song details
 - **Audio Streaming** - Stream .mp4 files from remote URLs
 - **Background Playback** - Continue listening when the app is minimized
 - **Control Center & Lock Screen** - Play, pause, skip, and seek from Control Center and Lock Screen with artwork display
@@ -37,15 +39,17 @@ music-stream-app/
 │   └── AppConfig.swift          # Centralized app configuration constants
 ├── Models/
 │   ├── Song.swift               # Song data model (SwiftData)
-│   └── Playlist.swift           # Playlist data model (SwiftData)
+│   ├── Playlist.swift           # Playlist data model with backend sync fields (SwiftData)
+│   └── PlaylistSong.swift       # Join model for ordered playlist-song relationships
 ├── Services/
 │   ├── AudioPlayerService.swift # Core audio player (AVPlayer-based)
 │   ├── NetworkMonitor.swift     # Network connectivity monitoring
-│   └── SongService.swift        # Backend API client
+│   ├── SongService.swift        # Backend song API client
+│   └── PlaylistService.swift    # Backend playlist API client with sync
 ├── ContentView.swift            # Root view with navigation, mini player, and loading screen
 ├── Views/
-│   ├── PlaylistListView.swift   # Grid of playlists
-│   ├── PlaylistDetailView.swift # Songs within a playlist
+│   ├── PlaylistListView.swift   # Backend-synced playlists with pull-to-refresh
+│   ├── PlaylistDetailView.swift # Songs within a playlist, scroll-aware nav title (read-only for system playlists)
 │   ├── NowPlayingView.swift     # Full-screen player
 │   ├── QueueView.swift          # Playback queue
 │   ├── AllSongsView.swift       # Browse songs from API
@@ -81,6 +85,8 @@ App-wide settings are centralized in `Config/AppConfig.swift`:
 |---------|---------|-------------|
 | `API.baseURL` | `http://localhost:8000` | Backend API base URL |
 | `API.defaultPageSize` | `20` | Songs per page for pagination |
+| `API.Endpoints.getPlaylists()` | `/playlists` | Fetch all playlists endpoint |
+| `API.Endpoints.getPlaylist(id)` | `/playlists/{id}` | Fetch playlist with songs endpoint |
 | `Cache.maxImageCacheSize` | `50` | Max images in LRU cache |
 | `Cache.maxArtworkCacheSize` | `20` | Max artwork images for Now Playing |
 | `Playback.seekPollingIterations` | `10` | Seek UI sync iterations |
@@ -125,6 +131,18 @@ The core audio service handles:
 - Playback state persistence across app sessions
 - Swift 6 strict concurrency compliance
 
+### PlaylistService
+
+Backend playlist synchronization service:
+- Fetches playlists from backend API (`GET /playlists`)
+- Fetches full playlist details with songs (`GET /playlists/{id}`)
+- Syncs to local SwiftData storage
+- Replaces local playlists with backend data on each sync
+- Automatic sync on app launch and manual pull-to-refresh
+- Handles system playlists (read-only, shown prominently)
+- Snake_case to camelCase JSON decoding
+- Typed error handling with user-friendly messages
+
 ### NetworkMonitor
 
 Real-time network connectivity monitoring using `NWPathMonitor`:
@@ -149,9 +167,10 @@ Reusable placeholder component:
 ### Data Persistence
 
 Uses SwiftData for local storage of:
-- Playlists with metadata (nullify delete rule)
+- Playlists with metadata and backend sync fields (backendId, isSystem, lastSyncedAt)
 - Songs with streaming URLs
-- Playlist-song relationships
+- Playlist-song relationships (nullify delete rule)
+- Backend playlists synced automatically on app launch
 
 Uses UserDefaults for playback state persistence:
 - Current song and queue

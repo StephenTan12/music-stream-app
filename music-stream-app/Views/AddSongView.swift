@@ -125,7 +125,8 @@ struct AddSongView: View {
         )
         
         modelContext.insert(song)
-        playlist.songs.append(song)
+        playlist.addSong(song)
+        
         dismiss()
     }
     

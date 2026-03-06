@@ -81,5 +81,5 @@ struct LoadingView: View {
 
 #Preview {
     ContentView()
-        .modelContainer(for: [Playlist.self, Song.self], inMemory: true)
+        .modelContainer(for: [Playlist.self, Song.self, PlaylistSong.self], inMemory: true)
 }

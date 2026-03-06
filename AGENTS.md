@@ -14,14 +14,16 @@ music-stream-app/
 ├── Config/AppConfig.swift         # API URLs, cache sizes, timing constants
 ├── Models/
 │   ├── Song.swift                 # SwiftData: title, artist, streamURL, artworkURL, etc.
-│   └── Playlist.swift             # SwiftData: many-to-many with Song
+│   ├── Playlist.swift             # SwiftData: ordered songs via PlaylistSong join, backend sync fields
+│   └── PlaylistSong.swift         # SwiftData: join model with order field for song ordering
 ├── Services/
 │   ├── AudioPlayerService.swift   # AVPlayer, queue, lock screen, session persistence
 │   ├── NetworkMonitor.swift       # NWPathMonitor connectivity
-│   └── SongService.swift          # Backend API client
+│   ├── SongService.swift          # Backend song API client
+│   └── PlaylistService.swift     # Backend playlist API client with sync
 ├── Views/
-│   ├── PlaylistListView.swift     # Playlist grid
-│   ├── PlaylistDetailView.swift   # Playlist songs, play/shuffle controls
+│   ├── PlaylistListView.swift     # Backend-synced playlists, pull-to-refresh, system playlist badges
+│   ├── PlaylistDetailView.swift   # Playlist songs, play/shuffle controls, scroll-aware nav title, read-only for system playlists
 │   ├── AllSongsView.swift         # API songs browse, play/shuffle controls
 │   ├── NowPlayingView.swift       # Full player, seek, queue access
 │   ├── QueueView.swift            # Playback queue
@@ -41,6 +43,7 @@ music-stream-app/
 ```swift
 @State private var audioPlayer = AudioPlayerService.shared
 @State private var networkMonitor = NetworkMonitor.shared
+@State private var playlistService = PlaylistService.shared
 ```
 
 ### SwiftData
@@ -86,9 +89,13 @@ Task { @MainActor in AudioPlayerService.shared.play() }
 
 **New Model Property**: Edit model file, SwiftData auto-migrates, update UI
 
-**New API Endpoint**: Add to `AppConfig.API.Endpoints`, create DTO if needed, add service method
+**New API Endpoint**: Add to `AppConfig.API.Endpoints`, create DTO if needed, add service method, configure `JSONDecoder.keyDecodingStrategy = .convertFromSnakeCase` for backend snake_case
 
 **Modify Playback**: Edit `AudioPlayerService.swift`, all methods `@MainActor`, update published properties
+
+**Sync Backend Data**: Use `PlaylistService.shared.syncPlaylistsToLocal(modelContext:)` to fetch and sync playlists from backend
+
+**Add Song to Playlist**: Use `playlist.addSong(song)` to add songs with proper ordering, use `playlist.removeSong(at:)` to remove, use `playlist.moveSong(from:to:)` to reorder
 
 ## Pitfalls
 
@@ -110,6 +117,15 @@ func fetch(completion: @escaping (Data) -> Void)
 
 // ✅ Async
 func fetch() async -> Data
+
+// ❌ Compare songs by UUID (fails after app restart - restored songs have same UUID but different instance)
+audioPlayer.currentSong?.id == song.id
+
+// ✅ Compare songs by videoId first, fallback to id
+if let currentVideoId = audioPlayer.currentSong?.videoId, let songVideoId = song.videoId {
+    return currentVideoId == songVideoId
+}
+return audioPlayer.currentSong?.id == song.id
 ```
 
 ## Testing
@@ -117,12 +133,13 @@ func fetch() async -> Data
 ```swift
 #Preview {
     SomeView()
-        .modelContainer(for: [Playlist.self, Song.self], inMemory: true)
+        .modelContainer(for: [Playlist.self, Song.self, PlaylistSong.self], inMemory: true)
 }
 ```
 
 ## Debug
 
 - **Audio**: Check `AudioPlayerService.currentError`, verify background capability, check `NetworkMonitor.shared.isConnected`
-- **SwiftData**: Xcode inspector, verify `@Relationship` and delete rules
+- **SwiftData**: Xcode inspector, verify `@Relationship` and delete rules, check `backendId` for synced playlists, song order preserved via `PlaylistSong.order`
 - **UI**: SwiftUI inspector, verify `@State`/`@Observable` updates, main actor isolation
+- **Backend Sync**: Check `PlaylistService.shared.error` for sync failures, verify `isLoading` state, check backend API responses

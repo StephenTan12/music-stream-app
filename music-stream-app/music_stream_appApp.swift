@@ -19,6 +19,7 @@ struct music_stream_appApp: App {
         let schema = Schema([
             Playlist.self,
             Song.self,
+            PlaylistSong.self,
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
         

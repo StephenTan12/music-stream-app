@@ -13,8 +13,12 @@ actor ImageCache {
     static let shared = ImageCache()
     
     private var cache: [URL: Image] = [:]
-    private let maxCacheSize = AppConfig.Cache.maxImageCacheSize
+    private let maxCacheSize: Int
     private var accessOrder: [URL] = []
+    
+    private init() {
+        self.maxCacheSize = 50
+    }
     
     func image(for url: URL) -> Image? {
         if let image = cache[url] {

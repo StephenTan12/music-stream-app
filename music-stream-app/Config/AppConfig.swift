@@ -30,6 +30,14 @@ enum AppConfig {
             static func getSongs(page: Int, pageSize: Int) -> String {
                 return "\(baseURL)/songs?page=\(page)&page_size=\(pageSize)"
             }
+            
+            static func getPlaylists() -> String {
+                return "\(baseURL)/playlists"
+            }
+            
+            static func getPlaylist(playlistId: Int) -> String {
+                return "\(baseURL)/playlists/\(playlistId)"
+            }
         }
     }
     

@@ -16,6 +16,7 @@ struct PlaylistDetailView: View {
     @State private var showEditPlaylist = false
     @State private var showDeleteConfirmation = false
     @State private var selectedPlayMode: PlayMode? = nil
+    @State private var showNavigationTitle = false
     
     enum PlayMode {
         case play
@@ -31,41 +32,58 @@ struct PlaylistDetailView: View {
             if playlist.songs.isEmpty {
                 emptyStateView
             } else {
-                List {
-                    headerSection
-                    controlsSection
-                    songsSection
+                ScrollView {
+                    LazyVStack(spacing: 0, pinnedViews: []) {
+                        headerSection
+                        controlsSection
+                        songsSection
+                    }
                 }
-                .listStyle(.plain)
-                .contentMargins(.bottom, hasMiniPlayer ? 60 : 0, for: .scrollContent)
+                .onPreferenceChange(TitleOffsetPreferenceKey.self) { value in
+                    let threshold: CGFloat = 80
+                    let shouldShow = value < threshold
+                    if shouldShow != showNavigationTitle {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            showNavigationTitle = shouldShow
+                        }
+                    }
+                }
+                .safeAreaInset(edge: .bottom) {
+                    if hasMiniPlayer {
+                        Color.clear.frame(height: 60)
+                    }
+                }
             }
         }
-        .navigationTitle(playlist.name)
+        .navigationTitle(showNavigationTitle ? playlist.name : "")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(showNavigationTitle ? .visible : .hidden, for: .navigationBar)
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Menu {
-                    Button {
-                        showAddSong = true
+            if !playlist.isSystem {
+                ToolbarItem(placement: .primaryAction) {
+                    Menu {
+                        Button {
+                            showAddSong = true
+                        } label: {
+                            Label("Add Song", systemImage: "plus")
+                        }
+                        
+                        Button {
+                            showEditPlaylist = true
+                        } label: {
+                            Label("Edit Playlist", systemImage: "pencil")
+                        }
+                        
+                        Divider()
+                        
+                        Button(role: .destructive) {
+                            showDeleteConfirmation = true
+                        } label: {
+                            Label("Delete Playlist", systemImage: "trash")
+                        }
                     } label: {
-                        Label("Add Song", systemImage: "plus")
+                        Image(systemName: "ellipsis.circle")
                     }
-                    
-                    Button {
-                        showEditPlaylist = true
-                    } label: {
-                        Label("Edit Playlist", systemImage: "pencil")
-                    }
-                    
-                    Divider()
-                    
-                    Button(role: .destructive) {
-                        showDeleteConfirmation = true
-                    } label: {
-                        Label("Delete Playlist", systemImage: "trash")
-                    }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
                 }
             }
         }
@@ -96,105 +114,141 @@ struct PlaylistDetailView: View {
         ContentUnavailableView {
             Label("No Songs", systemImage: "music.note")
         } description: {
-            Text("Add songs to this playlist")
+            Text(playlist.isSystem ? "This playlist is empty" : "Add songs to this playlist")
         } actions: {
-            Button {
-                showAddSong = true
-            } label: {
-                Label("Add Song", systemImage: "plus")
+            if !playlist.isSystem {
+                Button {
+                    showAddSong = true
+                } label: {
+                    Label("Add Song", systemImage: "plus")
+                }
+                .buttonStyle(.bordered)
             }
-            .buttonStyle(.bordered)
         }
     }
     
     private var headerSection: some View {
-        Section {
-            VStack(spacing: 16) {
-                CachedAsyncImage(url: URL(string: playlist.artworkURL ?? "")) { image in
-                    image
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                } placeholder: {
-                    GradientPlaceholderView()
-                }
-                .frame(width: 200, height: 200)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                .shadow(color: .black.opacity(0.2), radius: 10, x: 0, y: 5)
-                
-                VStack(spacing: 4) {
-                    Text(playlist.name)
-                        .font(.title2)
-                        .fontWeight(.bold)
-                    
-                    Text("\(playlist.songCount) songs • \(playlist.formattedTotalDuration)")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
+        VStack(spacing: 16) {
+            CachedAsyncImage(url: URL(string: playlist.artworkURL ?? "")) { image in
+                image
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } placeholder: {
+                GradientPlaceholderView()
             }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical)
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
+            .frame(width: 200, height: 200)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .shadow(color: .black.opacity(0.2), radius: 10, x: 0, y: 5)
+            
+            VStack(spacing: 4) {
+                Text(playlist.name)
+                    .font(.title2)
+                    .fontWeight(.bold)
+                    .background(
+                        GeometryReader { geometry in
+                            Color.clear.preference(
+                                key: TitleOffsetPreferenceKey.self,
+                                value: geometry.frame(in: .global).minY
+                            )
+                        }
+                    )
+                
+                Text("\(playlist.songCount) songs • \(playlist.formattedTotalDuration)")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
         }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical)
+        .padding(.top, 8)
     }
     
     private var controlsSection: some View {
-        Section {
-            HStack(spacing: 12) {
-                Button {
-                    selectedPlayMode = .play
-                    playAll(shuffle: false)
-                } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: "play.fill")
-                        Text("Play")
-                    }
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
-                    .background(selectedPlayMode == .play ? Color.blue : Color.gray.opacity(0.2))
-                    .foregroundStyle(selectedPlayMode == .play ? .white : .primary)
-                    .cornerRadius(10)
+        HStack(spacing: 12) {
+            Button {
+                selectedPlayMode = .play
+                playAll(shuffle: false)
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "play.fill")
+                    Text("Play")
                 }
-                .buttonStyle(.plain)
-                
-                Button {
-                    selectedPlayMode = .shuffle
-                    playAll(shuffle: true)
-                } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: "shuffle")
-                        Text("Shuffle")
-                    }
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
-                    .background(selectedPlayMode == .shuffle ? Color.blue : Color.gray.opacity(0.2))
-                    .foregroundStyle(selectedPlayMode == .shuffle ? .white : .primary)
-                    .cornerRadius(10)
-                }
-                .buttonStyle(.plain)
+                .font(.headline)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .background(selectedPlayMode == .play ? Color.blue : Color.gray.opacity(0.2))
+                .foregroundStyle(selectedPlayMode == .play ? .white : .primary)
+                .cornerRadius(10)
             }
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
-            .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 16, trailing: 20))
+            .buttonStyle(.plain)
+            
+            Button {
+                selectedPlayMode = .shuffle
+                playAll(shuffle: true)
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "shuffle")
+                    Text("Shuffle")
+                }
+                .font(.headline)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .background(selectedPlayMode == .shuffle ? Color.blue : Color.gray.opacity(0.2))
+                .foregroundStyle(selectedPlayMode == .shuffle ? .white : .primary)
+                .cornerRadius(10)
+            }
+            .buttonStyle(.plain)
         }
+        .padding(.horizontal, 20)
+        .padding(.bottom, 16)
     }
     
     private var songsSection: some View {
-        Section {
-            ForEach(Array(playlist.songs.enumerated()), id: \.element.id) { index, song in
-                SongRowView(
-                    song: song,
-                    index: index + 1,
-                    isPlaying: audioPlayer.currentSong?.id == song.id,
-                    isActuallyPlaying: audioPlayer.currentSong?.id == song.id && audioPlayer.isPlaying
-                ) {
-                    audioPlayer.loadAndPlay(song: song, from: playlist.songs)
+        LazyVStack(spacing: 0) {
+            if playlist.isSystem {
+                ForEach(Array(playlist.songs.enumerated()), id: \.element.id) { index, song in
+                    SongRowView(
+                        song: song,
+                        index: index + 1,
+                        isPlaying: isCurrentlyPlaying(song),
+                        isActuallyPlaying: isCurrentlyPlaying(song) && audioPlayer.isPlaying
+                    ) {
+                        audioPlayer.loadAndPlay(song: song, from: playlist.songs)
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 8)
+                    
+                    if index < playlist.songs.count - 1 {
+                        Divider()
+                            .padding(.leading, 92)
+                    }
+                }
+            } else {
+                ForEach(Array(playlist.songs.enumerated()), id: \.element.id) { index, song in
+                    SongRowView(
+                        song: song,
+                        index: index + 1,
+                        isPlaying: isCurrentlyPlaying(song),
+                        isActuallyPlaying: isCurrentlyPlaying(song) && audioPlayer.isPlaying
+                    ) {
+                        audioPlayer.loadAndPlay(song: song, from: playlist.songs)
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 8)
+                    .contextMenu {
+                        Button(role: .destructive) {
+                            removeSongs(offsets: IndexSet(integer: index))
+                        } label: {
+                            Label("Remove from Playlist", systemImage: "trash")
+                        }
+                    }
+                    
+                    if index < playlist.songs.count - 1 {
+                        Divider()
+                            .padding(.leading, 92)
+                    }
                 }
             }
-            .onDelete(perform: removeSongs)
-            .onMove(perform: moveSongs)
         }
     }
     
@@ -208,17 +262,34 @@ struct PlaylistDetailView: View {
     }
     
     private func removeSongs(offsets: IndexSet) {
-        for index in offsets {
-            playlist.songs.remove(at: index)
+        for index in offsets.sorted(by: >) {
+            playlist.removeSong(at: index)
         }
     }
     
     private func moveSongs(from source: IndexSet, to destination: Int) {
-        playlist.songs.move(fromOffsets: source, toOffset: destination)
+        playlist.moveSong(from: source, to: destination)
+    }
+    
+    private func isCurrentlyPlaying(_ song: Song) -> Bool {
+        guard let currentSong = audioPlayer.currentSong else { return false }
+        
+        if let currentVideoId = currentSong.videoId, let songVideoId = song.videoId {
+            return currentVideoId == songVideoId
+        }
+        
+        return currentSong.id == song.id
     }
     
     private func deletePlaylist() {
         modelContext.delete(playlist)
         dismiss()
+    }
+}
+
+struct TitleOffsetPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 200
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }

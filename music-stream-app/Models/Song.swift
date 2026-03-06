@@ -18,8 +18,8 @@ final class Song {
     var artworkURL: String?
     var dateAdded: Date
     
-    @Relationship(inverse: \Playlist.songs)
-    var playlists: [Playlist]?
+    @Relationship(deleteRule: .cascade, inverse: \PlaylistSong.song)
+    var playlistSongs: [PlaylistSong]?
     
     init(
         id: UUID = UUID(),
@@ -57,7 +57,7 @@ final class Song {
             artist: artist,
             album: album,
             duration: duration,
-            streamURL: APIConfig.Endpoints.streamSong(videoId: videoId),
+            streamURL: AppConfig.API.Endpoints.streamSong(videoId: videoId),
             artworkURL: artworkURL
         )
     }
