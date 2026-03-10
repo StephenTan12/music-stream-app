@@ -50,4 +50,9 @@ enum AppConfig {
         static let seekPollingIterations = 10
         static let seekPollingIntervalMs = 50
     }
+    
+    enum Downloads {
+        static let directory = "Downloads"
+        static let artworkDirectory = "Downloads/Artwork"
+    }
 }

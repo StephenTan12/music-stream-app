@@ -12,8 +12,10 @@ struct PlaylistListView: View {
     
     @State private var audioPlayer = AudioPlayerService.shared
     @State private var playlistService = PlaylistService.shared
+    @State private var downloadService = DownloadService.shared
     @State private var hasLoadedOnce = false
     @State private var isInitialLoad = true
+    @State private var showDownloadStorage = false
     
     private var hasMiniPlayer: Bool {
         audioPlayer.currentSong != nil
@@ -85,6 +87,20 @@ struct PlaylistListView: View {
         }
         .contentMargins(.bottom, hasMiniPlayer ? 60 : 0, for: .scrollContent)
         .navigationTitle("Playlists")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    showDownloadStorage = true
+                } label: {
+                    Image(systemName: "arrow.down.circle")
+                }
+                .accessibilityLabel("Downloads")
+                .id("downloads-storage-button")
+            }
+        }
+        .sheet(isPresented: $showDownloadStorage) {
+            DownloadStorageView()
+        }
         .refreshable {
             await playlistService.syncPlaylistsToLocal(modelContext: modelContext)
         }

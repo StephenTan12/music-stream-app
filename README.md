@@ -8,6 +8,7 @@ A SwiftUI-based iOS music streaming application that plays audio from remote .mp
 - **System Playlists** - Read-only system playlists (like "All Songs") shown prominently with star badge
 - **Playlist Management** - View backend-synced playlists with full song details
 - **Audio Streaming** - Stream .mp4 files from remote URLs
+- **Offline Playback** - Download songs for offline listening with progress tracking
 - **Background Playback** - Continue listening when the app is minimized
 - **Control Center & Lock Screen** - Play, pause, skip, and seek from Control Center and Lock Screen with artwork display
 - **Loading Screen** - Smooth dark loading screen on app launch
@@ -43,6 +44,7 @@ music-stream-app/
 │   └── PlaylistSong.swift       # Join model for ordered playlist-song relationships
 ├── Services/
 │   ├── AudioPlayerService.swift # Core audio player (AVPlayer-based)
+│   ├── DownloadService.swift    # Offline download management
 │   ├── NetworkMonitor.swift     # Network connectivity monitoring
 │   ├── SongService.swift        # Backend song API client
 │   └── PlaylistService.swift    # Backend playlist API client with sync
@@ -56,9 +58,10 @@ music-stream-app/
 │   ├── AddSongView.swift        # Add songs with URL validation
 │   ├── EditPlaylistView.swift   # Edit playlist details
 │   └── Components/
-│       ├── MiniPlayerView.swift        # Bottom mini player bar
-│       ├── SongRowView.swift           # Song list row
-│       ├── CachedAsyncImage.swift      # LRU-cached image loader
+│       ├── MiniPlayerView.swift          # Bottom mini player bar
+│       ├── SongRowView.swift             # Song list row with context menu
+│       ├── DownloadStorageView.swift     # Download management and storage stats
+│       ├── CachedAsyncImage.swift        # LRU-cached image loader
 │       └── GradientPlaceholderView.swift # Reusable gradient placeholder
 └── music_stream_appApp.swift    # App entry point with model container setup
 ```
@@ -91,6 +94,8 @@ App-wide settings are centralized in `Config/AppConfig.swift`:
 | `Cache.maxArtworkCacheSize` | `20` | Max artwork images for Now Playing |
 | `Playback.seekPollingIterations` | `10` | Seek UI sync iterations |
 | `Playback.seekPollingIntervalMs` | `50` | Seek polling interval (ms) |
+| `Downloads.directory` | `Downloads` | Downloaded audio files directory |
+| `Downloads.artworkDirectory` | `Downloads/Artwork` | Downloaded artwork directory |
 
 ## Adding Songs
 
@@ -128,8 +133,24 @@ The core audio service handles:
 - Audio interruption handling isolated from per-track resource cleanup
 - Error handling with user-friendly messages
 - Network connectivity checks before streaming
-- Playback state persistence across app sessions
+- **Offline playback** - Prefers local files when available, falls back to streaming
+- Playback state persistence across app sessions (including local file paths)
 - Swift 6 strict concurrency compliance
+
+### DownloadService
+
+Offline download management:
+- Downloads songs and artwork to Documents directory for persistent storage
+- Reuses existing downloaded files to prevent duplicates
+- Progress tracking for individual songs and playlists
+- Cancel in-progress downloads
+- Remove individual or all downloads
+- Storage usage statistics with formatted display
+- Uses URLSession with delegate for progress updates
+- Singleton pattern with `@MainActor` isolation
+- Heavy file moves, writes, deletes, and storage scans run off the main actor
+- Automatic cleanup of stale paths on app startup and when opening download management
+- Preserves download information across app sessions
 
 ### PlaylistService
 
@@ -137,9 +158,11 @@ Backend playlist synchronization service:
 - Fetches playlists from backend API (`GET /playlists`)
 - Fetches full playlist details with songs (`GET /playlists/{id}`)
 - Syncs to local SwiftData storage
-- Replaces local playlists with backend data on each sync
+- Updates existing playlists and songs to preserve download information
+- Reuses songs by `videoId` to maintain download paths across syncs
 - Automatic sync on app launch and manual pull-to-refresh
 - Handles system playlists (read-only, shown prominently)
+- Cleans up orphaned songs without downloads
 - Snake_case to camelCase JSON decoding
 - Typed error handling with user-friendly messages
 
@@ -173,10 +196,16 @@ Uses SwiftData for local storage of:
 - Backend playlists synced automatically on app launch
 
 Uses UserDefaults for playback state persistence:
-- Current song and queue
+- Current song and queue (including local file paths)
 - Playback position
 - Shuffle and repeat mode settings
 - Automatically restored on app launch
+
+Uses Documents directory for offline downloads:
+- Downloaded audio files (`Downloads/`)
+- Downloaded artwork (`Downloads/Artwork/`)
+- Persists across app sessions
+- Stale paths are reconciled on startup before UI uses persisted download metadata
 
 ## Background Audio & Control Center
 
@@ -194,6 +223,33 @@ The following are configured in `Info.plist`:
 - MPNowPlayingInfoCenter displays song title, artist, album, artwork, and playback progress
 - Controls appear in Control Center (swipe down) and on Lock Screen when audio is playing
 
+## Offline Playback
+
+Download songs for offline listening:
+
+### Downloading
+- **Individual songs** - Long press on any song and select "Download" from the context menu
+- **Entire playlists** - Use the download button in the playlist toolbar
+- **Progress tracking** - Visual progress indicators during downloads
+- **Cancel downloads** - Stop in-progress downloads via context menu
+- **Duplicate prevention** - Automatically reuses existing downloaded files
+
+### Managing Downloads
+- **Storage view** - Access via the download icon in the playlist list toolbar
+- **Storage statistics** - See total space used and number of downloaded songs
+- **Remove downloads** - Delete individual songs via context menu or clear all downloads
+- **Downloaded badge** - Small download icon appears next to artist name for downloaded songs
+- **Persistent storage** - Downloads persist across app restarts and are stored in Documents directory
+- **Stale file recovery** - Missing files are cleared from SwiftData during cleanup so the UI stays in sync
+
+### Playback Behavior
+- Downloaded songs play from local storage without network
+- Playback automatically uses local files when available, including artwork in Now Playing and on the lock screen
+- Session persistence includes local file paths for seamless restore
+- Downloads persist across app sessions in Documents directory
+- Stale download paths are cleaned up automatically on app startup
+- Download-state rendering avoids synchronous `FileManager` checks in SwiftUI rows
+
 ## Error Handling
 
 The app gracefully handles errors:
@@ -201,6 +257,7 @@ The app gracefully handles errors:
 - **Playback errors** - Displays error alerts with skip-to-next option
 - **Image loading failures** - Falls back to gradient placeholders with debug logging
 - **Network issues** - Detects offline state and prevents failed stream attempts
+- **Download failures** - Shows error alerts when downloads fail
 
 ## Accessibility
 

@@ -17,6 +17,9 @@ struct PlaylistDetailView: View {
     @State private var showDeleteConfirmation = false
     @State private var selectedPlayMode: PlayMode? = nil
     @State private var showNavigationTitle = false
+    @State private var downloadService = DownloadService.shared
+    @State private var isDownloadingPlaylist = false
+    @State private var showRemoveDownloadsConfirmation = false
     
     enum PlayMode {
         case play
@@ -25,6 +28,25 @@ struct PlaylistDetailView: View {
     
     private var hasMiniPlayer: Bool {
         audioPlayer.currentSong != nil
+    }
+    
+    private var downloadedSongsCount: Int {
+        playlist.songs.filter { $0.isDownloaded }.count
+    }
+    
+    private var downloadingSongsCount: Int {
+        playlist.songs.filter { $0.isDownloading }.count
+    }
+    
+    private var allSongsDownloaded: Bool {
+        !playlist.songs.isEmpty && downloadedSongsCount == playlist.songs.count
+    }
+    
+    private var playlistDownloadProgress: Double {
+        guard !playlist.songs.isEmpty else { return 0 }
+        let downloadedProgress = Double(downloadedSongsCount)
+        let downloadingProgress = playlist.songs.filter { $0.isDownloading }.reduce(0.0) { $0 + ($1.downloadProgress ?? 0) }
+        return (downloadedProgress + downloadingProgress) / Double(playlist.songs.count)
     }
     
     var body: some View {
@@ -59,32 +81,39 @@ struct PlaylistDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(showNavigationTitle ? .visible : .hidden, for: .navigationBar)
         .toolbar {
-            if !playlist.isSystem {
-                ToolbarItem(placement: .primaryAction) {
-                    Menu {
-                        Button {
-                            showAddSong = true
+            ToolbarItem(placement: .primaryAction) {
+                HStack(spacing: 16) {
+                    if !playlist.songs.isEmpty {
+                        playlistDownloadButton
+                    }
+                    
+                    if !playlist.isSystem {
+                        Menu {
+                            Button {
+                                showAddSong = true
+                            } label: {
+                                Label("Add Song", systemImage: "plus")
+                            }
+                            
+                            Button {
+                                showEditPlaylist = true
+                            } label: {
+                                Label("Edit Playlist", systemImage: "pencil")
+                            }
+                            
+                            Divider()
+                            
+                            Button(role: .destructive) {
+                                showDeleteConfirmation = true
+                            } label: {
+                                Label("Delete Playlist", systemImage: "trash")
+                            }
                         } label: {
-                            Label("Add Song", systemImage: "plus")
+                            Image(systemName: "ellipsis.circle")
                         }
-                        
-                        Button {
-                            showEditPlaylist = true
-                        } label: {
-                            Label("Edit Playlist", systemImage: "pencil")
-                        }
-                        
-                        Divider()
-                        
-                        Button(role: .destructive) {
-                            showDeleteConfirmation = true
-                        } label: {
-                            Label("Delete Playlist", systemImage: "trash")
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
                     }
                 }
+                .id(playlist.id)
             }
         }
         .confirmationDialog(
@@ -98,6 +127,19 @@ struct PlaylistDetailView: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("Are you sure you want to delete \"\(playlist.name)\"? This action cannot be undone.")
+        }
+        .alert(
+            "Remove Downloads",
+            isPresented: $showRemoveDownloadsConfirmation
+        ) {
+            Button("Remove All Downloads", role: .destructive) {
+                for song in playlist.songs {
+                    downloadService.removeSongDownload(song)
+                }
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Remove all downloaded songs from \"\(playlist.name)\"?")
         }
         .sheet(isPresented: $showAddSong) {
             AddSongView(playlist: playlist)
@@ -284,6 +326,52 @@ struct PlaylistDetailView: View {
     private func deletePlaylist() {
         modelContext.delete(playlist)
         dismiss()
+    }
+    
+    @ViewBuilder
+    private var playlistDownloadButton: some View {
+        if downloadingSongsCount > 0 {
+            Button {
+                downloadService.cancelPlaylistDownload(playlist)
+                isDownloadingPlaylist = false
+            } label: {
+                ZStack {
+                    Circle()
+                        .stroke(Color.gray.opacity(0.3), lineWidth: 2)
+                        .frame(width: 24, height: 24)
+                    
+                    Circle()
+                        .trim(from: 0, to: playlistDownloadProgress)
+                        .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                        .frame(width: 24, height: 24)
+                        .rotationEffect(.degrees(-90))
+                    
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .accessibilityLabel("Downloading playlist, tap to cancel")
+        } else if allSongsDownloaded {
+            Button {
+                showRemoveDownloadsConfirmation = true
+            } label: {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            }
+            .accessibilityLabel("All songs downloaded, tap to remove downloads")
+        } else {
+            Button {
+                isDownloadingPlaylist = true
+                Task {
+                    try? await downloadService.downloadPlaylist(playlist)
+                    isDownloadingPlaylist = false
+                }
+            } label: {
+                Image(systemName: "arrow.down.circle")
+            }
+            .accessibilityLabel("Download all songs")
+        }
     }
 }
 

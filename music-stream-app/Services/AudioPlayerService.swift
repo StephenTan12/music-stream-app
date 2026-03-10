@@ -72,6 +72,8 @@ struct PersistedSong: Codable {
     let duration: TimeInterval
     let streamURL: String
     let artworkURL: String?
+    let localFilePath: String?
+    let localArtworkPath: String?
     
     init(from song: Song) {
         self.id = song.id.uuidString
@@ -82,6 +84,8 @@ struct PersistedSong: Codable {
         self.duration = song.duration
         self.streamURL = song.streamURL
         self.artworkURL = song.artworkURL
+        self.localFilePath = song.localFilePath
+        self.localArtworkPath = song.localArtworkPath
     }
     
     func toSong() -> Song {
@@ -93,7 +97,9 @@ struct PersistedSong: Codable {
             album: album,
             duration: duration,
             streamURL: streamURL,
-            artworkURL: artworkURL
+            artworkURL: artworkURL,
+            localFilePath: localFilePath,
+            localArtworkPath: localArtworkPath
         )
     }
 }
@@ -282,21 +288,29 @@ final class AudioPlayerService {
         isLoading = true
         isBuffering = true
         
-        if !NetworkMonitor.shared.isConnected {
-            setError(.noInternet)
-            isLoading = false
+        let playbackURL: URL
+        
+        if let localURL = song.localFileURL {
+            playbackURL = localURL
             isBuffering = false
-            return
+        } else {
+            if !NetworkMonitor.shared.isConnected {
+                setError(.noInternet)
+                isLoading = false
+                isBuffering = false
+                return
+            }
+            
+            guard let url = URL(string: song.streamURL) else {
+                setError(.invalidURL)
+                isLoading = false
+                isBuffering = false
+                return
+            }
+            playbackURL = url
         }
         
-        guard let url = URL(string: song.streamURL) else {
-            setError(.invalidURL)
-            isLoading = false
-            isBuffering = false
-            return
-        }
-        
-        playerItem = AVPlayerItem(url: url)
+        playerItem = AVPlayerItem(url: playbackURL)
         player = AVPlayer(playerItem: playerItem)
         
         setupTimeObserver()
@@ -313,6 +327,13 @@ final class AudioPlayerService {
     }
     
     private func fetchArtworkForNowPlaying(song: Song) {
+        if let localArtworkURL = song.localArtworkURL,
+           let data = try? Data(contentsOf: localArtworkURL),
+           let image = UIImage(data: data) {
+            updateNowPlayingArtwork(image)
+            return
+        }
+        
         guard let artworkURLString = song.artworkURL,
               let artworkURL = URL(string: artworkURLString) else { return }
         
@@ -663,14 +684,22 @@ final class AudioPlayerService {
         isLoading = true
         isBuffering = true
         
-        guard let url = URL(string: song.streamURL) else {
-            setError(.invalidURL)
-            isLoading = false
+        let playbackURL: URL
+        
+        if let localURL = song.localFileURL {
+            playbackURL = localURL
             isBuffering = false
-            return
+        } else {
+            guard let url = URL(string: song.streamURL) else {
+                setError(.invalidURL)
+                isLoading = false
+                isBuffering = false
+                return
+            }
+            playbackURL = url
         }
         
-        playerItem = AVPlayerItem(url: url)
+        playerItem = AVPlayerItem(url: playbackURL)
         player = AVPlayer(playerItem: playerItem)
         
         setupTimeObserver()

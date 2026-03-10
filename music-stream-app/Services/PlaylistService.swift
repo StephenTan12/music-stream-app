@@ -129,62 +129,127 @@ class PlaylistService: ObservableObject {
             return
         }
         
-        var newPlaylists: [Playlist] = []
+        var syncedPlaylistIds: Set<Int> = []
         
         for playlistDTO in playlistDTOs {
             guard let playlistWithSongs = await fetchPlaylist(id: playlistDTO.id) else {
                 continue
             }
             
+            let backendId = playlistWithSongs.id
+            syncedPlaylistIds.insert(backendId)
+            
+            // Check if playlist with this backendId already exists
+            let playlistFetchDescriptor = FetchDescriptor<Playlist>(
+                predicate: #Predicate<Playlist> { playlist in
+                    playlist.backendId == backendId
+                }
+            )
+            
+            let existingPlaylist = try? modelContext.fetch(playlistFetchDescriptor).first
+            
             let dateFormatter = ISO8601DateFormatter()
             let createdAt = dateFormatter.date(from: playlistWithSongs.createdAt) ?? Date()
             
-            let playlist = Playlist(
-                name: playlistWithSongs.name,
-                playlistDescription: playlistWithSongs.description ?? "",
-                createdAt: createdAt
-            )
-            playlist.backendId = playlistWithSongs.id
-            playlist.isSystem = playlistWithSongs.isSystem
-            playlist.lastSyncedAt = Date()
+            let playlist: Playlist
+            if let existingPlaylist = existingPlaylist {
+                // Update existing playlist
+                existingPlaylist.name = playlistWithSongs.name
+                existingPlaylist.playlistDescription = playlistWithSongs.description ?? ""
+                existingPlaylist.isSystem = playlistWithSongs.isSystem
+                existingPlaylist.lastSyncedAt = Date()
+                playlist = existingPlaylist
+            } else {
+                // Create new playlist
+                playlist = Playlist(
+                    name: playlistWithSongs.name,
+                    playlistDescription: playlistWithSongs.description ?? "",
+                    createdAt: createdAt
+                )
+                playlist.backendId = playlistWithSongs.id
+                playlist.isSystem = playlistWithSongs.isSystem
+                playlist.lastSyncedAt = Date()
+                modelContext.insert(playlist)
+            }
+            
+            // Clear existing playlist songs for this playlist
+            for playlistSong in playlist.playlistSongs {
+                modelContext.delete(playlistSong)
+            }
             
             var playlistSongs: [PlaylistSong] = []
             for (index, songDTO) in playlistWithSongs.songs.enumerated() {
-                let song = Song(
-                    videoId: songDTO.id,
-                    title: songDTO.title,
-                    artist: songDTO.artist ?? "Unknown Artist",
-                    duration: TimeInterval(songDTO.duration)
+                // Check if song with this videoId already exists (to preserve download paths)
+                let videoId = songDTO.id
+                let songFetchDescriptor = FetchDescriptor<Song>(
+                    predicate: #Predicate<Song> { song in
+                        song.videoId == videoId
+                    }
                 )
                 
+                let existingSong = try? modelContext.fetch(songFetchDescriptor).first
+                
+                let song: Song
+                if let existingSong = existingSong {
+                    // Reuse existing song to preserve download paths
+                    existingSong.title = songDTO.title
+                    existingSong.artist = songDTO.artist ?? "Unknown Artist"
+                    existingSong.duration = TimeInterval(songDTO.duration)
+                    song = existingSong
+                } else {
+                    // Create new song
+                    song = Song(
+                        videoId: songDTO.id,
+                        title: songDTO.title,
+                        artist: songDTO.artist ?? "Unknown Artist",
+                        duration: TimeInterval(songDTO.duration)
+                    )
+                    modelContext.insert(song)
+                }
+
                 let playlistSong = PlaylistSong(
                     order: index,
                     playlist: playlist,
                     song: song
                 )
-                
+                modelContext.insert(playlistSong)
                 playlistSongs.append(playlistSong)
             }
             
             playlist.playlistSongs = playlistSongs
-            
-            newPlaylists.append(playlist)
         }
         
         do {
+            // Remove playlists that are no longer on the backend
             let fetchDescriptor = FetchDescriptor<Playlist>()
             let existingPlaylists = try modelContext.fetch(fetchDescriptor)
             for playlist in existingPlaylists {
-                modelContext.delete(playlist)
-            }
-            
-            for playlist in newPlaylists {
-                modelContext.insert(playlist)
+                if let backendId = playlist.backendId, !syncedPlaylistIds.contains(backendId) {
+                    modelContext.delete(playlist)
+                }
             }
             
             try modelContext.save()
+            
+            // Clean up orphaned songs that have no downloads
+            cleanupOrphanedSongs(modelContext: modelContext)
         } catch {
             self.error = .syncError("Failed to sync playlists: \(error.localizedDescription)")
+        }
+    }
+    
+    private func cleanupOrphanedSongs(modelContext: ModelContext) {
+        let songFetchDescriptor = FetchDescriptor<Song>()
+        guard let allSongs = try? modelContext.fetch(songFetchDescriptor) else { return }
+        
+        for song in allSongs {
+            // Keep songs that have downloads or are in a playlist
+            let hasDownload = song.localFilePath != nil
+            let isInPlaylist = (song.playlistSongs?.isEmpty == false)
+            
+            if !hasDownload && !isInPlaylist {
+                modelContext.delete(song)
+            }
         }
     }
 }

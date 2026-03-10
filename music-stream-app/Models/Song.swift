@@ -18,6 +18,11 @@ final class Song {
     var artworkURL: String?
     var dateAdded: Date
     
+    var localFilePath: String?
+    var localArtworkPath: String?
+    var downloadProgress: Double?
+    var isDownloading: Bool = false
+    
     @Relationship(deleteRule: .cascade, inverse: \PlaylistSong.song)
     var playlistSongs: [PlaylistSong]?
     
@@ -30,7 +35,9 @@ final class Song {
         duration: TimeInterval = 0,
         streamURL: String,
         artworkURL: String? = nil,
-        dateAdded: Date = Date()
+        dateAdded: Date = Date(),
+        localFilePath: String? = nil,
+        localArtworkPath: String? = nil
     ) {
         self.id = id
         self.videoId = videoId
@@ -41,6 +48,8 @@ final class Song {
         self.streamURL = streamURL
         self.artworkURL = artworkURL
         self.dateAdded = dateAdded
+        self.localFilePath = localFilePath
+        self.localArtworkPath = localArtworkPath
     }
     
     convenience init(
@@ -68,5 +77,19 @@ extension Song {
         let minutes = Int(duration) / 60
         let seconds = Int(duration) % 60
         return String(format: "%d:%02d", minutes, seconds)
+    }
+    
+    var isDownloaded: Bool {
+        localFilePath != nil
+    }
+    
+    var localFileURL: URL? {
+        guard let path = localFilePath else { return nil }
+        return DownloadService.cachesDirectory.appendingPathComponent(path)
+    }
+    
+    var localArtworkURL: URL? {
+        guard let path = localArtworkPath else { return nil }
+        return DownloadService.cachesDirectory.appendingPathComponent(path)
     }
 }

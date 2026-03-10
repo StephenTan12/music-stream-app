@@ -14,19 +14,19 @@ struct QueueView: View {
             List {
                 if let currentSong = audioPlayer.currentSong {
                     Section("Now Playing") {
-                        SongRowView(song: currentSong, isPlaying: true, isActuallyPlaying: audioPlayer.isPlaying, showMenu: false) {
+                        SongRowView(song: currentSong, isPlaying: true, isActuallyPlaying: audioPlayer.isPlaying, showMenu: false, onTap: {
                             audioPlayer.togglePlayPause()
-                        }
+                        })
                     }
                 }
                 
                 if !upNextSongs.isEmpty {
                     Section("Up Next") {
                         ForEach(Array(upNextSongs.enumerated()), id: \.element.id) { index, song in
-                            SongRowView(song: song, isPlaying: false, showMenu: false) {
+                            SongRowView(song: song, isPlaying: false, showMenu: false, onTap: {
                                 let actualIndex = audioPlayer.currentIndex + 1 + index
                                 audioPlayer.playFromQueue(at: actualIndex)
-                            }
+                            })
                         }
                         .onDelete(perform: removeFromQueue)
                     }

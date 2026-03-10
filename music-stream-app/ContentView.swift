@@ -8,8 +8,10 @@ import SwiftData
 
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.modelContext) private var modelContext
     @State private var audioPlayer = AudioPlayerService.shared
     @State private var networkMonitor = NetworkMonitor.shared
+    @State private var downloadService = DownloadService.shared
     @State private var songService = SongService.shared
     @State private var showNowPlaying = false
     @State private var isInitialLoading = true
@@ -43,6 +45,7 @@ struct ContentView: View {
                 NowPlayingView(audioPlayer: audioPlayer)
             }
             .task {
+                downloadService.cleanupStalePaths(modelContext: modelContext)
                 await songService.refresh()
                 withAnimation {
                     isInitialLoading = false

@@ -90,27 +90,27 @@ struct NowPlayingView: View {
     @ViewBuilder
     private func artworkView(size: CGFloat) -> some View {
         ZStack {
-            CachedAsyncImage(url: URL(string: audioPlayer.currentSong?.artworkURL ?? "")) { image in
-                image
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-            } placeholder: {
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(
-                        LinearGradient(
-                            colors: [Color.gray.opacity(0.4), Color.gray.opacity(0.2)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .overlay {
-                        Image(systemName: "music.note")
-                            .font(.system(size: 60))
-                            .foregroundStyle(.secondary)
-                    }
+            if let localArtworkURL = audioPlayer.currentSong?.localArtworkURL {
+                AsyncImage(url: localArtworkURL) { image in
+                    image
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                } placeholder: {
+                    nowPlayingArtworkPlaceholder
+                }
+                .frame(width: size, height: size)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+            } else {
+                CachedAsyncImage(url: URL(string: audioPlayer.currentSong?.artworkURL ?? "")) { image in
+                    image
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                } placeholder: {
+                    nowPlayingArtworkPlaceholder
+                }
+                .frame(width: size, height: size)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
             }
-            .frame(width: size, height: size)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
             
             if audioPlayer.isBuffering || audioPlayer.isLoading {
                 RoundedRectangle(cornerRadius: 12)
@@ -130,6 +130,22 @@ struct NowPlayingView: View {
         .shadow(color: .black.opacity(0.3), radius: 20, x: 0, y: 10)
         .scaleEffect(audioPlayer.isPlaying ? 1.0 : 0.95)
         .animation(.spring(response: 0.5, dampingFraction: 0.7), value: audioPlayer.isPlaying)
+    }
+    
+    private var nowPlayingArtworkPlaceholder: some View {
+        RoundedRectangle(cornerRadius: 12)
+            .fill(
+                LinearGradient(
+                    colors: [Color.gray.opacity(0.4), Color.gray.opacity(0.2)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            )
+            .overlay {
+                Image(systemName: "music.note")
+                    .font(.system(size: 60))
+                    .foregroundStyle(.secondary)
+            }
     }
     
     private var songInfoView: some View {

@@ -34,55 +34,54 @@ struct MiniPlayerView: View {
             .frame(height: 2)
             
             HStack(spacing: 12) {
-                Button {
-                    showNowPlaying = true
-                } label: {
-                    HStack(spacing: 12) {
-                        ZStack {
-                            CachedAsyncImage(url: URL(string: song.artworkURL ?? "")) { image in
-                                image
-                                    .resizable()
-                                    .aspectRatio(contentMode: .fill)
-                            } placeholder: {
-                                RoundedRectangle(cornerRadius: 6)
-                                    .fill(Color.gray.opacity(0.3))
-                                    .overlay {
-                                        Image(systemName: "music.note")
-                                            .foregroundStyle(.secondary)
-                                    }
-                            }
-                            .frame(width: 44, height: 44)
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                            
-                            if audioPlayer.isBuffering || audioPlayer.isLoading {
-                                RoundedRectangle(cornerRadius: 6)
-                                    .fill(.ultraThinMaterial)
-                                    .frame(width: 44, height: 44)
-                                    .overlay {
-                                        ProgressView()
-                                            .scaleEffect(0.7)
-                                    }
-                            }
+                HStack(spacing: 12) {
+                    ZStack {
+                        CachedAsyncImage(url: URL(string: song.artworkURL ?? "")) { image in
+                            image
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                        } placeholder: {
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(Color.gray.opacity(0.3))
+                                .overlay {
+                                    Image(systemName: "music.note")
+                                        .foregroundStyle(.secondary)
+                                }
                         }
+                        .frame(width: 44, height: 44)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
                         
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(song.title)
-                                .font(.subheadline)
-                                .fontWeight(.medium)
-                                .lineLimit(1)
-                            
-                            Text(song.artist)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
+                        if audioPlayer.isBuffering || audioPlayer.isLoading {
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(.ultraThinMaterial)
+                                .frame(width: 44, height: 44)
+                                .overlay {
+                                    ProgressView()
+                                        .scaleEffect(0.7)
+                                }
                         }
                     }
+                    
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(song.title)
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                            .lineLimit(1)
+                        
+                        Text(song.artist)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    
+                    Spacer()
                 }
-                .buttonStyle(.plain)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    showNowPlaying = true
+                }
                 .accessibilityLabel("\(song.title) by \(song.artist)")
                 .accessibilityHint("Tap to open Now Playing")
-                
-                Spacer()
                 
                 HStack(spacing: 20) {
                     Button {
