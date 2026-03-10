@@ -42,7 +42,7 @@ struct PlaylistListView: View {
         }
         .task {
             if !hasLoadedOnce {
-                await playlistService.syncPlaylistsToLocal(modelContext: modelContext)
+                await playlistService.syncPlaylistMetadata(modelContext: modelContext)
                 hasLoadedOnce = true
                 isInitialLoad = false
             }
@@ -83,7 +83,6 @@ struct PlaylistListView: View {
                     PlaylistRowView(playlist: playlist)
                 }
             }
-            .onDelete(perform: deletePlaylists)
         }
         .contentMargins(.bottom, hasMiniPlayer ? 60 : 0, for: .scrollContent)
         .navigationTitle("Playlists")
@@ -102,22 +101,19 @@ struct PlaylistListView: View {
             DownloadStorageView()
         }
         .refreshable {
-            await playlistService.syncPlaylistsToLocal(modelContext: modelContext)
+            await playlistService.syncPlaylistMetadata(modelContext: modelContext)
         }
     }
     
-    private func deletePlaylists(offsets: IndexSet) {
-        let playlistsToDelete = offsets.map { sortedPlaylists[$0] }
-        for playlist in playlistsToDelete {
-            if !playlist.isSystem {
-                modelContext.delete(playlist)
-            }
-        }
-    }
 }
 
 struct PlaylistRowView: View {
     let playlist: Playlist
+    @State private var audioPlayer = AudioPlayerService.shared
+    
+    private var isCurrentPlaylist: Bool {
+        audioPlayer.isPlayingPlaylist(playlist.id)
+    }
     
     var body: some View {
         HStack(spacing: 12) {
@@ -135,8 +131,9 @@ struct PlaylistRowView: View {
                 HStack(spacing: 6) {
                     Text(playlist.name)
                         .font(.body)
-                        .fontWeight(.medium)
+                        .fontWeight(isCurrentPlaylist ? .semibold : .medium)
                         .lineLimit(1)
+                        .foregroundStyle(isCurrentPlaylist ? Color.accentColor : .primary)
                     
                     if playlist.isSystem {
                         Image(systemName: "star.fill")
@@ -148,6 +145,19 @@ struct PlaylistRowView: View {
                 Text("\(playlist.songCount) songs • \(playlist.formattedTotalDuration)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+            
+            Spacer()
+            
+            if isCurrentPlaylist {
+                if audioPlayer.isPlaying {
+                    Image(systemName: "waveform")
+                        .symbolEffect(.variableColor.iterative)
+                        .foregroundStyle(Color.accentColor)
+                } else {
+                    Image(systemName: "play.fill")
+                        .foregroundStyle(Color.accentColor)
+                }
             }
         }
         .padding(.vertical, 4)

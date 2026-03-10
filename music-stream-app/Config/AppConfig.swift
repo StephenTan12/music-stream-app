@@ -15,18 +15,6 @@ enum AppConfig {
                 return "\(baseURL)/songs/stream/\(videoId)"
             }
             
-            static func getSong(videoId: String) -> String {
-                return "\(baseURL)/songs/\(videoId)"
-            }
-            
-            static func downloadSong(videoId: String) -> String {
-                return "\(baseURL)/songs/\(videoId)"
-            }
-            
-            static func deleteSong(videoId: String) -> String {
-                return "\(baseURL)/songs/\(videoId)"
-            }
-            
             static func getSongs(page: Int, pageSize: Int) -> String {
                 return "\(baseURL)/songs?page=\(page)&page_size=\(pageSize)"
             }
@@ -43,7 +31,6 @@ enum AppConfig {
     
     enum Cache {
         static let maxImageCacheSize = 50
-        static let maxArtworkCacheSize = 20
     }
     
     enum Playback {

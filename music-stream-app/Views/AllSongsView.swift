@@ -6,7 +6,7 @@
 import SwiftUI
 
 struct AllSongsView: View {
-    @StateObject private var songService = SongService.shared
+    @State private var songService = SongService.shared
     @Bindable var audioPlayer: AudioPlayerService
     
     @State private var selectedPlayMode: PlayMode? = nil

@@ -7,19 +7,17 @@ import SwiftUI
 import SwiftData
 
 struct PlaylistDetailView: View {
-    @Environment(\.modelContext) private var modelContext
-    @Environment(\.dismiss) private var dismiss
     @Bindable var playlist: Playlist
     @Bindable var audioPlayer: AudioPlayerService
+    @Environment(\.modelContext) private var modelContext
     
-    @State private var showAddSong = false
-    @State private var showEditPlaylist = false
-    @State private var showDeleteConfirmation = false
+    @State private var playlistService = PlaylistService.shared
     @State private var selectedPlayMode: PlayMode? = nil
     @State private var showNavigationTitle = false
     @State private var downloadService = DownloadService.shared
     @State private var isDownloadingPlaylist = false
     @State private var showRemoveDownloadsConfirmation = false
+    @State private var hasSyncedPlaylist = false
     
     enum PlayMode {
         case play
@@ -82,51 +80,10 @@ struct PlaylistDetailView: View {
         .toolbarBackground(showNavigationTitle ? .visible : .hidden, for: .navigationBar)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                HStack(spacing: 16) {
-                    if !playlist.songs.isEmpty {
-                        playlistDownloadButton
-                    }
-                    
-                    if !playlist.isSystem {
-                        Menu {
-                            Button {
-                                showAddSong = true
-                            } label: {
-                                Label("Add Song", systemImage: "plus")
-                            }
-                            
-                            Button {
-                                showEditPlaylist = true
-                            } label: {
-                                Label("Edit Playlist", systemImage: "pencil")
-                            }
-                            
-                            Divider()
-                            
-                            Button(role: .destructive) {
-                                showDeleteConfirmation = true
-                            } label: {
-                                Label("Delete Playlist", systemImage: "trash")
-                            }
-                        } label: {
-                            Image(systemName: "ellipsis.circle")
-                        }
-                    }
+                if !playlist.songs.isEmpty {
+                    playlistDownloadButton
                 }
-                .id(playlist.id)
             }
-        }
-        .confirmationDialog(
-            "Delete Playlist",
-            isPresented: $showDeleteConfirmation,
-            titleVisibility: .visible
-        ) {
-            Button("Delete", role: .destructive) {
-                deletePlaylist()
-            }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text("Are you sure you want to delete \"\(playlist.name)\"? This action cannot be undone.")
         }
         .alert(
             "Remove Downloads",
@@ -141,14 +98,14 @@ struct PlaylistDetailView: View {
         } message: {
             Text("Remove all downloaded songs from \"\(playlist.name)\"?")
         }
-        .sheet(isPresented: $showAddSong) {
-            AddSongView(playlist: playlist)
-        }
-        .sheet(isPresented: $showEditPlaylist) {
-            EditPlaylistView(playlist: playlist)
-        }
         .onChange(of: playlist.songs) { [audioPlayer] _, newSongs in
             audioPlayer.syncQueueWithPlaylist(newSongs)
+        }
+        .task {
+            if !hasSyncedPlaylist {
+                await playlistService.syncPlaylistToLocal(playlist, modelContext: modelContext)
+                hasSyncedPlaylist = true
+            }
         }
     }
     
@@ -156,16 +113,7 @@ struct PlaylistDetailView: View {
         ContentUnavailableView {
             Label("No Songs", systemImage: "music.note")
         } description: {
-            Text(playlist.isSystem ? "This playlist is empty" : "Add songs to this playlist")
-        } actions: {
-            if !playlist.isSystem {
-                Button {
-                    showAddSong = true
-                } label: {
-                    Label("Add Song", systemImage: "plus")
-                }
-                .buttonStyle(.bordered)
-            }
+            Text("This playlist is empty")
         }
     }
     
@@ -247,46 +195,20 @@ struct PlaylistDetailView: View {
     
     private var songsSection: some View {
         LazyVStack(spacing: 0) {
-            if playlist.isSystem {
-                ForEach(Array(playlist.songs.enumerated()), id: \.element.id) { index, song in
-                    SongRowView(
-                        song: song,
-                        isPlaying: isCurrentlyPlaying(song),
-                        isActuallyPlaying: isCurrentlyPlaying(song) && audioPlayer.isPlaying
-                    ) {
-                        handleSongTap(song)
-                    }
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 8)
-                    
-                    if index < playlist.songs.count - 1 {
-                        Divider()
-                            .padding(.leading, 72)
-                    }
+            ForEach(Array(playlist.songs.enumerated()), id: \.element.id) { index, song in
+                SongRowView(
+                    song: song,
+                    isPlaying: isCurrentlyPlaying(song),
+                    isActuallyPlaying: isCurrentlyPlaying(song) && audioPlayer.isPlaying
+                ) {
+                    handleSongTap(song)
                 }
-            } else {
-                ForEach(Array(playlist.songs.enumerated()), id: \.element.id) { index, song in
-                    SongRowView(
-                        song: song,
-                        isPlaying: isCurrentlyPlaying(song),
-                        isActuallyPlaying: isCurrentlyPlaying(song) && audioPlayer.isPlaying
-                    ) {
-                        handleSongTap(song)
-                    }
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 8)
-                    .contextMenu {
-                        Button(role: .destructive) {
-                            removeSongs(offsets: IndexSet(integer: index))
-                        } label: {
-                            Label("Remove from Playlist", systemImage: "trash")
-                        }
-                    }
-                    
-                    if index < playlist.songs.count - 1 {
-                        Divider()
-                            .padding(.leading, 72)
-                    }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 8)
+                
+                if index < playlist.songs.count - 1 {
+                    Divider()
+                        .padding(.leading, 72)
                 }
             }
         }
@@ -298,17 +220,7 @@ struct PlaylistDetailView: View {
             return
         }
         audioPlayer.playbackMode = shuffle ? .shuffle : .linear
-        audioPlayer.loadAndPlay(song: songToPlay, from: playlist.songs)
-    }
-    
-    private func removeSongs(offsets: IndexSet) {
-        for index in offsets.sorted(by: >) {
-            playlist.removeSong(at: index)
-        }
-    }
-    
-    private func moveSongs(from source: IndexSet, to destination: Int) {
-        playlist.moveSong(from: source, to: destination)
+        audioPlayer.loadAndPlay(song: songToPlay, from: playlist.songs, playlistId: playlist.id)
     }
     
     private func isCurrentlyPlaying(_ song: Song) -> Bool {
@@ -325,13 +237,8 @@ struct PlaylistDetailView: View {
         if isCurrentlyPlaying(song) {
             audioPlayer.togglePlayPause()
         } else {
-            audioPlayer.loadAndPlay(song: song, from: playlist.songs)
+            audioPlayer.loadAndPlay(song: song, from: playlist.songs, playlistId: playlist.id)
         }
-    }
-    
-    private func deletePlaylist() {
-        modelContext.delete(playlist)
-        dismiss()
     }
     
     @ViewBuilder

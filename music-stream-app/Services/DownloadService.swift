@@ -287,10 +287,6 @@ final class DownloadService {
         }
     }
     
-    func calculateStorageUsed() -> Int64 {
-        totalStorageUsed
-    }
-    
     func formattedStorageUsed() -> String {
         let bytes = Double(totalStorageUsed)
         

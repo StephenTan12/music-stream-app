@@ -11,10 +11,10 @@ music-stream-app/
 ├── music_stream_appApp.swift      # Entry point, SwiftData container
 ├── ContentView.swift              # Root: navigation, mini player, loading screen, offline banner
 ├── Info.plist                     # Background modes, dark mode, launch screen
-├── Config/AppConfig.swift         # API URLs, cache sizes, timing constants, download paths
+├── Config/AppConfig.swift         # API URLs, cache size, timing constants, download paths
 ├── Models/
 │   ├── Song.swift                 # SwiftData: title, artist, streamURL, artworkURL, download state
-│   ├── Playlist.swift             # SwiftData: ordered songs via PlaylistSong join, backend sync fields
+│   ├── Playlist.swift             # SwiftData: ordered songs via PlaylistSong join, backend sync fields (totalSongs, totalDuration)
 │   └── PlaylistSong.swift         # SwiftData: join model with order field for song ordering
 ├── Services/
 │   ├── AudioPlayerService.swift   # AVPlayer, queue, lock screen, session persistence, offline playback
@@ -23,8 +23,8 @@ music-stream-app/
 │   ├── SongService.swift          # Backend song API client
 │   └── PlaylistService.swift      # Backend playlist API client with sync
 ├── Views/
-│   ├── PlaylistListView.swift     # Backend-synced playlists, pull-to-refresh, system playlist badges
-│   ├── PlaylistDetailView.swift   # Playlist songs, play/shuffle controls, scroll-aware nav title, read-only for system playlists
+│   ├── PlaylistListView.swift     # Playlist list with metadata sync, pull-to-refresh, system playlist badges
+│   ├── PlaylistDetailView.swift   # Playlist songs (synced on navigation), play/shuffle controls, scroll-aware nav title
 │   ├── AllSongsView.swift         # API songs browse, play/shuffle controls
 │   ├── NowPlayingView.swift       # Full player, seek, queue access
 │   ├── QueueView.swift            # Playback queue
@@ -47,6 +47,7 @@ music-stream-app/
 @State private var networkMonitor = NetworkMonitor.shared
 @State private var playlistService = PlaylistService.shared
 @State private var downloadService = DownloadService.shared
+@State private var songService = SongService.shared
 ```
 
 ### SwiftData
@@ -80,7 +81,7 @@ Task { @MainActor in AudioPlayerService.shared.play() }
 | Area | Rule |
 |------|------|
 | **Naming** | Views: `*View.swift`, Services: `*Service.swift`, Models: `*.swift` |
-| **State** | `@State` (local), `@Observable` (services), `@Query` (SwiftData), `@Bindable` (binding) |
+| **State** | `@State` (local), `@Observable` (services), `@Query` (SwiftData), `@Bindable` (binding). Never use `@StateObject` or `@ObservedObject` - use `@State` with `@Observable` services instead |
 | **Concurrency** | All services `@MainActor`, use `async/await`, no callbacks |
 | **Errors** | Typed enums + `LocalizedError`, handle at UI boundary |
 | **Logging** | `os.Logger` not `print` |
@@ -94,9 +95,14 @@ Task { @MainActor in AudioPlayerService.shared.play() }
 
 **New API Endpoint**: Add to `AppConfig.API.Endpoints`, create DTO if needed, add service method, configure `JSONDecoder.keyDecodingStrategy = .convertFromSnakeCase` for backend snake_case
 
-**Modify Playback**: Edit `AudioPlayerService.swift`, all methods `@MainActor`, update published properties
+**Modify Playback**: Edit `AudioPlayerService.swift`, all methods `@MainActor`, update observable properties
 
-**Sync Backend Data**: Use `PlaylistService.shared.syncPlaylistsToLocal(modelContext:)` to fetch and sync playlists from backend. Automatically reuses existing songs by `videoId` to preserve download paths, updates playlist/song metadata, and cleans up orphaned songs without downloads.
+**Sync Backend Data**: Playlist syncing uses a two-tier approach for efficiency:
+- `PlaylistService.shared.syncPlaylistMetadata(modelContext:)` - Fetches only playlist list (name, description, isSystem, totalSongs, totalDuration) without songs. Used by `PlaylistListView` for initial load and pull-to-refresh.
+- `PlaylistService.shared.syncPlaylistToLocal(_:modelContext:)` - Fetches a single playlist's songs. Used by `PlaylistDetailView` when navigating to a playlist.
+- `PlaylistService.shared.syncPlaylistsToLocal(modelContext:)` - Full sync of all playlists and songs. Use sparingly as it makes N+1 API calls.
+
+All sync methods reuse existing songs by `videoId` to preserve download paths and clean up orphaned songs without downloads. Backend-provided `totalSongs` and `totalDuration` are stored directly on the playlist and used by `songCount` and `duration` computed properties when available, falling back to local calculation.
 
 **Add Song to Playlist**: Use `playlist.addSong(song)` to add songs with proper ordering, use `playlist.removeSong(at:)` to remove, use `playlist.moveSong(from:to:)` to reorder
 
@@ -114,7 +120,7 @@ Task { @MainActor in AudioPlayerService.shared.play() }
 
 Downloads persist across app sessions through:
 1. **Documents Directory**: Files stored in `FileManager.documentDirectory` (not Caches, which iOS can purge)
-2. **Song Reuse**: `PlaylistService.syncPlaylistsToLocal` reuses existing songs by `videoId` to preserve `localFilePath`/`localArtworkPath`
+2. **Song Reuse**: `PlaylistService` sync methods reuse existing songs by `videoId` to preserve `localFilePath`/`localArtworkPath`
 3. **Startup Cleanup**: `ContentView.task` calls `cleanupStalePaths` to verify file existence and clear stale paths
 4. **Duplicate Prevention**: `DownloadService.downloadAudioFile` checks if file exists before downloading
 5. **Render Performance**: `Song` download helpers return persisted paths without synchronous filesystem checks during SwiftUI view updates
@@ -147,6 +153,12 @@ func fetch(completion: @escaping (Data) -> Void)
 
 // ✅ Async
 func fetch() async -> Data
+
+// ❌ Use @StateObject or @ObservedObject with ObservableObject
+@StateObject private var songService = SongService.shared
+
+// ✅ Use @State with @Observable services
+@State private var songService = SongService.shared
 
 // ❌ Compare songs by UUID (fails after app restart - restored songs have same UUID but different instance)
 audioPlayer.currentSong?.id == song.id
@@ -207,5 +219,5 @@ while let fileURL = enumerator.nextObject() as? URL { ... }
 - **Audio**: Check `AudioPlayerService.currentError`, verify background capability, check `NetworkMonitor.shared.isConnected`
 - **SwiftData**: Xcode inspector, verify `@Relationship` and delete rules, check `backendId` for synced playlists, song order preserved via `PlaylistSong.order`
 - **UI**: SwiftUI inspector, verify `@State`/`@Observable` updates, main actor isolation
-- **Backend Sync**: Check `PlaylistService.shared.error` for sync failures, verify `isLoading` state, check backend API responses
+- **Backend Sync**: Check `PlaylistService.shared.error` for sync failures, verify `isLoading` state, check backend API responses. `PlaylistListView` syncs metadata only; `PlaylistDetailView` syncs individual playlist songs on navigation.
 - **Downloads**: Check `DownloadService.shared.activeDownloads` for progress, `song.isDownloaded`/`song.localFileURL` for persisted local state, storage via `formattedStorageUsed()`, and `cleanupStalePaths(modelContext:)` if files were removed outside the app. Downloads persist in Documents directory across sessions. If songs show as not downloaded after sync, check that `PlaylistService` is reusing songs by `videoId`.

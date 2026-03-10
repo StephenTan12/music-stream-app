@@ -112,6 +112,7 @@ struct PersistedPlaybackState: Codable {
     let currentTime: TimeInterval
     let playbackMode: String
     let repeatMode: String
+    let currentPlaylistId: String?
 }
 
 @Observable
@@ -127,7 +128,7 @@ final class AudioPlayerService {
     private var itemObservers: [NSObjectProtocol] = []
     private var artworkCache: [String: UIImage] = [:]
     private var artworkAccessOrder: [String] = []
-    private let maxArtworkCacheSize = AppConfig.Cache.maxArtworkCacheSize
+    private let maxArtworkCacheSize = 20
     
     private static let playbackStateKey = "persistedPlaybackState"
     
@@ -147,6 +148,9 @@ final class AudioPlayerService {
     var queue: [Song] = []
     var originalQueue: [Song] = []
     var currentIndex: Int = 0
+    
+    // Current playlist tracking
+    var currentPlaylistId: UUID?
     
     // Playback modes
     var playbackMode: PlaybackMode = .linear {
@@ -265,7 +269,7 @@ final class AudioPlayerService {
     
     // MARK: - Playback Controls
     
-    func loadAndPlay(song: Song, from playlist: [Song]? = nil) {
+    func loadAndPlay(song: Song, from playlist: [Song]? = nil, playlistId: UUID? = nil) {
         if let playlist = playlist {
             originalQueue = playlist
             if playbackMode == .shuffle {
@@ -276,6 +280,7 @@ final class AudioPlayerService {
             currentIndex = queue.firstIndex(where: { $0.id == song.id }) ?? 0
         }
         
+        currentPlaylistId = playlistId
         loadSong(song)
         play()
     }
@@ -643,7 +648,8 @@ final class AudioPlayerService {
             currentIndex: currentIndex,
             currentTime: currentTime,
             playbackMode: playbackMode.rawValue,
-            repeatMode: repeatMode.rawValue
+            repeatMode: repeatMode.rawValue,
+            currentPlaylistId: currentPlaylistId?.uuidString
         )
         
         if let encoded = try? JSONEncoder().encode(state) {
@@ -670,6 +676,10 @@ final class AudioPlayerService {
         }
         if let mode = RepeatMode(rawValue: state.repeatMode) {
             repeatMode = mode
+        }
+        
+        if let playlistIdString = state.currentPlaylistId {
+            currentPlaylistId = UUID(uuidString: playlistIdString)
         }
         
         if let song = currentSong {
@@ -765,5 +775,9 @@ final class AudioPlayerService {
     var hasPreviousTrack: Bool {
         guard !queue.isEmpty else { return false }
         return currentIndex > 0 || repeatMode == .all || currentTime > 3
+    }
+    
+    func isPlayingPlaylist(_ playlistId: UUID) -> Bool {
+        currentPlaylistId == playlistId && currentSong != nil
     }
 }

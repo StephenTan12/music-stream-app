@@ -14,6 +14,8 @@ struct PlaylistDTO: Codable {
     let isSystem: Bool
     let createdAt: String
     let updatedAt: String
+    let totalSongs: Int?
+    let totalDuration: Double?
 }
 
 struct PlaylistWithSongsDTO: Codable {
@@ -23,6 +25,8 @@ struct PlaylistWithSongsDTO: Codable {
     let isSystem: Bool
     let createdAt: String
     let updatedAt: String
+    let totalSongs: Int?
+    let totalDuration: Double?
     let songs: [SongDTO]
 }
 
@@ -119,6 +123,145 @@ class PlaylistService: ObservableObject {
         }
     }
     
+    /// Syncs only playlist metadata (name, description, isSystem) without fetching individual playlist songs.
+    /// Use this for pull-to-refresh on the playlist list view.
+    func syncPlaylistMetadata(modelContext: ModelContext) async {
+        isLoading = true
+        error = nil
+        
+        defer { isLoading = false }
+        
+        guard let playlistDTOs = await fetchPlaylists() else {
+            return
+        }
+        
+        var syncedPlaylistIds: Set<Int> = []
+        
+        for playlistDTO in playlistDTOs {
+            let backendId = playlistDTO.id
+            syncedPlaylistIds.insert(backendId)
+            
+            let playlistFetchDescriptor = FetchDescriptor<Playlist>(
+                predicate: #Predicate<Playlist> { playlist in
+                    playlist.backendId == backendId
+                }
+            )
+            
+            let existingPlaylist = try? modelContext.fetch(playlistFetchDescriptor).first
+            
+            let dateFormatter = ISO8601DateFormatter()
+            let createdAt = dateFormatter.date(from: playlistDTO.createdAt) ?? Date()
+            
+            if let existingPlaylist = existingPlaylist {
+                existingPlaylist.name = playlistDTO.name
+                existingPlaylist.playlistDescription = playlistDTO.description ?? ""
+                existingPlaylist.isSystem = playlistDTO.isSystem
+                existingPlaylist.totalSongs = playlistDTO.totalSongs
+                existingPlaylist.totalDuration = playlistDTO.totalDuration.map { TimeInterval($0) }
+                existingPlaylist.lastSyncedAt = Date()
+            } else {
+                let playlist = Playlist(
+                    name: playlistDTO.name,
+                    playlistDescription: playlistDTO.description ?? "",
+                    createdAt: createdAt
+                )
+                playlist.backendId = playlistDTO.id
+                playlist.isSystem = playlistDTO.isSystem
+                playlist.totalSongs = playlistDTO.totalSongs
+                playlist.totalDuration = playlistDTO.totalDuration.map { TimeInterval($0) }
+                playlist.lastSyncedAt = Date()
+                modelContext.insert(playlist)
+            }
+        }
+        
+        do {
+            let fetchDescriptor = FetchDescriptor<Playlist>()
+            let existingPlaylists = try modelContext.fetch(fetchDescriptor)
+            for playlist in existingPlaylists {
+                if let backendId = playlist.backendId, !syncedPlaylistIds.contains(backendId) {
+                    modelContext.delete(playlist)
+                }
+            }
+            
+            try modelContext.save()
+        } catch {
+            self.error = .syncError("Failed to sync playlists: \(error.localizedDescription)")
+        }
+    }
+    
+    /// Syncs a single playlist's songs from the backend.
+    /// Use this when navigating to a playlist detail view.
+    func syncPlaylistToLocal(_ playlist: Playlist, modelContext: ModelContext) async {
+        guard let backendId = playlist.backendId else { return }
+        
+        isLoading = true
+        error = nil
+        
+        defer { isLoading = false }
+        
+        guard let playlistWithSongs = await fetchPlaylist(id: backendId) else {
+            return
+        }
+        
+        playlist.name = playlistWithSongs.name
+        playlist.playlistDescription = playlistWithSongs.description ?? ""
+        playlist.isSystem = playlistWithSongs.isSystem
+        playlist.totalSongs = playlistWithSongs.totalSongs
+        playlist.totalDuration = playlistWithSongs.totalDuration.map { TimeInterval($0) }
+        playlist.lastSyncedAt = Date()
+        
+        for playlistSong in playlist.playlistSongs {
+            modelContext.delete(playlistSong)
+        }
+        
+        var playlistSongs: [PlaylistSong] = []
+        for (index, songDTO) in playlistWithSongs.songs.enumerated() {
+            let videoId = songDTO.id
+            let songFetchDescriptor = FetchDescriptor<Song>(
+                predicate: #Predicate<Song> { song in
+                    song.videoId == videoId
+                }
+            )
+            
+            let existingSong = try? modelContext.fetch(songFetchDescriptor).first
+            
+            let song: Song
+            if let existingSong = existingSong {
+                existingSong.title = songDTO.title
+                existingSong.artist = songDTO.artist ?? "Unknown Artist"
+                existingSong.duration = TimeInterval(songDTO.duration)
+                song = existingSong
+            } else {
+                song = Song(
+                    videoId: songDTO.id,
+                    title: songDTO.title,
+                    artist: songDTO.artist ?? "Unknown Artist",
+                    duration: TimeInterval(songDTO.duration)
+                )
+                modelContext.insert(song)
+            }
+
+            let playlistSong = PlaylistSong(
+                order: index,
+                playlist: playlist,
+                song: song
+            )
+            modelContext.insert(playlistSong)
+            playlistSongs.append(playlistSong)
+        }
+        
+        playlist.playlistSongs = playlistSongs
+        
+        do {
+            try modelContext.save()
+            cleanupOrphanedSongs(modelContext: modelContext)
+        } catch {
+            self.error = .syncError("Failed to sync playlist: \(error.localizedDescription)")
+        }
+    }
+    
+    /// Full sync that fetches all playlists and their songs.
+    /// Use this for initial load or when navigating to a playlist detail view.
     func syncPlaylistsToLocal(modelContext: ModelContext) async {
         isLoading = true
         error = nil
@@ -157,6 +300,8 @@ class PlaylistService: ObservableObject {
                 existingPlaylist.name = playlistWithSongs.name
                 existingPlaylist.playlistDescription = playlistWithSongs.description ?? ""
                 existingPlaylist.isSystem = playlistWithSongs.isSystem
+                existingPlaylist.totalSongs = playlistWithSongs.totalSongs
+                existingPlaylist.totalDuration = playlistWithSongs.totalDuration.map { TimeInterval($0) }
                 existingPlaylist.lastSyncedAt = Date()
                 playlist = existingPlaylist
             } else {
@@ -168,6 +313,8 @@ class PlaylistService: ObservableObject {
                 )
                 playlist.backendId = playlistWithSongs.id
                 playlist.isSystem = playlistWithSongs.isSystem
+                playlist.totalSongs = playlistWithSongs.totalSongs
+                playlist.totalDuration = playlistWithSongs.totalDuration.map { TimeInterval($0) }
                 playlist.lastSyncedAt = Date()
                 modelContext.insert(playlist)
             }

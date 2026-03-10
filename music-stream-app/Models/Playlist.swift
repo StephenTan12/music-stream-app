@@ -16,6 +16,8 @@ final class Playlist: Hashable {
     var backendId: Int?
     var isSystem: Bool
     var lastSyncedAt: Date?
+    var totalSongs: Int?
+    var totalDuration: TimeInterval?
     
     @Relationship(deleteRule: .cascade, inverse: \PlaylistSong.playlist)
     var playlistSongs: [PlaylistSong]
@@ -29,6 +31,8 @@ final class Playlist: Hashable {
         backendId: Int? = nil,
         isSystem: Bool = false,
         lastSyncedAt: Date? = nil,
+        totalSongs: Int? = nil,
+        totalDuration: TimeInterval? = nil,
         playlistSongs: [PlaylistSong] = []
     ) {
         self.id = id
@@ -39,6 +43,8 @@ final class Playlist: Hashable {
         self.backendId = backendId
         self.isSystem = isSystem
         self.lastSyncedAt = lastSyncedAt
+        self.totalSongs = totalSongs
+        self.totalDuration = totalDuration
         self.playlistSongs = playlistSongs
     }
     
@@ -51,15 +57,15 @@ final class Playlist: Hashable {
 
 extension Playlist {
     var songCount: Int {
-        songs.count
+        totalSongs ?? songs.count
     }
     
-    var totalDuration: TimeInterval {
-        songs.reduce(0) { $0 + $1.duration }
+    var duration: TimeInterval {
+        totalDuration ?? songs.reduce(0) { $0 + $1.duration }
     }
     
     var formattedTotalDuration: String {
-        let totalMinutes = Int(totalDuration) / 60
+        let totalMinutes = Int(duration) / 60
         if totalMinutes >= 60 {
             let hours = totalMinutes / 60
             let minutes = totalMinutes % 60

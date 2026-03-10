@@ -4,7 +4,7 @@
 //
 
 import Foundation
-import Combine
+import Observation
 
 struct PaginatedSongsResponse: Codable {
     let songs: [SongDTO]
@@ -54,15 +54,16 @@ enum SongServiceError: LocalizedError {
     }
 }
 
+@Observable
 @MainActor
-class SongService: ObservableObject {
+final class SongService {
     static let shared = SongService()
     
-    @Published var songs: [Song] = []
-    @Published var isLoading = false
-    @Published var error: SongServiceError?
-    @Published var currentPage = 1
-    @Published var totalPages = 1
+    var songs: [Song] = []
+    var isLoading = false
+    var error: SongServiceError?
+    var currentPage = 1
+    var totalPages = 1
     
     var hasMorePages: Bool { currentPage < totalPages }
     
