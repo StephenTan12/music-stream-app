@@ -251,29 +251,27 @@ struct PlaylistDetailView: View {
                 ForEach(Array(playlist.songs.enumerated()), id: \.element.id) { index, song in
                     SongRowView(
                         song: song,
-                        index: index + 1,
                         isPlaying: isCurrentlyPlaying(song),
                         isActuallyPlaying: isCurrentlyPlaying(song) && audioPlayer.isPlaying
                     ) {
-                        audioPlayer.loadAndPlay(song: song, from: playlist.songs)
+                        handleSongTap(song)
                     }
                     .padding(.horizontal, 20)
                     .padding(.vertical, 8)
                     
                     if index < playlist.songs.count - 1 {
                         Divider()
-                            .padding(.leading, 92)
+                            .padding(.leading, 72)
                     }
                 }
             } else {
                 ForEach(Array(playlist.songs.enumerated()), id: \.element.id) { index, song in
                     SongRowView(
                         song: song,
-                        index: index + 1,
                         isPlaying: isCurrentlyPlaying(song),
                         isActuallyPlaying: isCurrentlyPlaying(song) && audioPlayer.isPlaying
                     ) {
-                        audioPlayer.loadAndPlay(song: song, from: playlist.songs)
+                        handleSongTap(song)
                     }
                     .padding(.horizontal, 20)
                     .padding(.vertical, 8)
@@ -287,7 +285,7 @@ struct PlaylistDetailView: View {
                     
                     if index < playlist.songs.count - 1 {
                         Divider()
-                            .padding(.leading, 92)
+                            .padding(.leading, 72)
                     }
                 }
             }
@@ -321,6 +319,14 @@ struct PlaylistDetailView: View {
         }
         
         return currentSong.id == song.id
+    }
+    
+    private func handleSongTap(_ song: Song) {
+        if isCurrentlyPlaying(song) {
+            audioPlayer.togglePlayPause()
+        } else {
+            audioPlayer.loadAndPlay(song: song, from: playlist.songs)
+        }
     }
     
     private func deletePlaylist() {
