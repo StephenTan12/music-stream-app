@@ -9,7 +9,7 @@ Music streaming app: .mp4 audio streaming, playlist management, background playb
 ```
 music-stream-app/
 ├── music_stream_appApp.swift      # Entry point, SwiftData container
-├── ContentView.swift              # Root: navigation, mini player, loading screen, offline banner
+├── ContentView.swift              # Root: navigation, mini player, loading screen
 ├── Info.plist                     # Background modes, dark mode, launch screen
 ├── Config/AppConfig.swift         # API URLs, cache size, timing constants, download paths
 ├── Models/
@@ -19,11 +19,11 @@ music-stream-app/
 ├── Services/
 │   ├── AudioPlayerService.swift   # AVPlayer, queue, lock screen, session persistence, offline playback
 │   ├── DownloadService.swift      # Offline downloads, progress tracking, storage management
-│   ├── NetworkMonitor.swift       # NWPathMonitor connectivity
+│   ├── NetworkMonitor.swift       # NWPathMonitor connectivity + server reachability
 │   ├── SongService.swift          # Backend song API client
 │   └── PlaylistService.swift      # Backend playlist API client with sync
 ├── Views/
-│   ├── PlaylistListView.swift     # Playlist list with metadata sync, pull-to-refresh, system playlist badges
+│   ├── PlaylistListView.swift     # Playlist list with metadata sync, pull-to-refresh, system playlist badges, connection status icons
 │   ├── PlaylistDetailView.swift   # Playlist songs (synced on navigation), play/shuffle controls, scroll-aware nav title
 │   ├── AllSongsView.swift         # API songs browse, play/shuffle controls
 │   ├── NowPlayingView.swift       # Full player, seek, queue access
@@ -133,6 +133,16 @@ Downloads persist across app sessions through:
 - **Visual indicator**: Small download icon appears next to artist name when `song.isDownloaded` is true
 - **Playlist toolbar**: Download all songs button in `PlaylistDetailView` toolbar
 
+### Offline Network Guardrails
+
+- All network-dependent services must check `NetworkMonitor.shared.isConnected` before creating `URLSession` requests
+- `SongService` and `PlaylistService` return early when offline (silent fail, no error alerts)
+- On server errors, services set `NetworkMonitor.shared.isServerReachable = false` (reset to `true` on success)
+- `PlaylistListView` shows connection status icons in nav bar: `wifi.slash` (offline) or `exclamationmark.icloud` (server down)
+- `CachedAsyncImage` should skip remote image loads when offline
+- `DownloadService` should reject new downloads when offline and skip optional artwork requests
+- `AudioPlayerService` should avoid remote stream/artwork fetches when offline (local files/cached artwork still allowed)
+
 ## Pitfalls
 
 ```swift
@@ -216,7 +226,7 @@ while let fileURL = enumerator.nextObject() as? URL { ... }
 
 ## Debug
 
-- **Audio**: Check `AudioPlayerService.currentError`, verify background capability, check `NetworkMonitor.shared.isConnected`
+- **Audio**: Check `AudioPlayerService.currentError`, verify background capability, check `NetworkMonitor.shared.isConnected` and `isServerReachable`
 - **SwiftData**: Xcode inspector, verify `@Relationship` and delete rules, check `backendId` for synced playlists, song order preserved via `PlaylistSong.order`
 - **UI**: SwiftUI inspector, verify `@State`/`@Observable` updates, main actor isolation
 - **Backend Sync**: Check `PlaylistService.shared.error` for sync failures, verify `isLoading` state, check backend API responses. `PlaylistListView` syncs metadata only; `PlaylistDetailView` syncs individual playlist songs on navigation.

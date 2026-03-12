@@ -341,6 +341,8 @@ final class AudioPlayerService {
         
         guard let artworkURLString = song.artworkURL,
               let artworkURL = URL(string: artworkURLString) else { return }
+
+        guard NetworkMonitor.shared.isConnected else { return }
         
         if let cached = artworkCache[artworkURLString] {
             touchArtworkAccess(artworkURLString)
@@ -351,7 +353,7 @@ final class AudioPlayerService {
         Task.detached { [weak self, artworkURLString] in
             guard let self else { return }
             do {
-                let (data, _) = try await URLSession.shared.data(from: artworkURL)
+                let (data, _) = try await AppConfig.API.urlSession.data(from: artworkURL)
                 if let image = UIImage(data: data) {
                     await MainActor.run {
                         self.evictAndCacheArtwork(image, for: artworkURLString)
@@ -700,6 +702,13 @@ final class AudioPlayerService {
             playbackURL = localURL
             isBuffering = false
         } else {
+            if !NetworkMonitor.shared.isConnected {
+                setError(.noInternet)
+                isLoading = false
+                isBuffering = false
+                return
+            }
+
             guard let url = URL(string: song.streamURL) else {
                 setError(.invalidURL)
                 isLoading = false

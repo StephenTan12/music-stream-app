@@ -5,7 +5,7 @@
 
 import Foundation
 import SwiftData
-import Combine
+import Observation
 
 struct PlaylistDTO: Codable {
     let id: Int
@@ -50,17 +50,22 @@ enum PlaylistServiceError: LocalizedError {
     }
 }
 
+@Observable
 @MainActor
-class PlaylistService: ObservableObject {
+final class PlaylistService {
     static let shared = PlaylistService()
     
-    @Published var playlists: [PlaylistDTO] = []
-    @Published var isLoading = false
-    @Published var error: PlaylistServiceError?
+    var playlists: [PlaylistDTO] = []
+    var isLoading = false
+    var error: PlaylistServiceError?
     
     private init() {}
     
     func fetchPlaylists() async -> [PlaylistDTO]? {
+        guard NetworkMonitor.shared.isConnected else {
+            return nil
+        }
+
         let urlString = AppConfig.API.Endpoints.getPlaylists()
         guard let url = URL(string: urlString) else {
             error = .invalidURL
@@ -68,13 +73,15 @@ class PlaylistService: ObservableObject {
         }
         
         do {
-            let (data, response) = try await URLSession.shared.data(from: url)
+            let (data, response) = try await AppConfig.API.urlSession.data(from: url)
             
             guard let httpResponse = response as? HTTPURLResponse,
                   (200...299).contains(httpResponse.statusCode) else {
-                error = .networkError("Server returned an error")
+                NetworkMonitor.shared.isServerReachable = false
                 return nil
             }
+            
+            NetworkMonitor.shared.isServerReachable = true
             
             let decoder = JSONDecoder()
             decoder.keyDecodingStrategy = .convertFromSnakeCase
@@ -87,12 +94,16 @@ class PlaylistService: ObservableObject {
             error = .decodingError(decodingError.localizedDescription)
             return nil
         } catch {
-            self.error = .networkError(error.localizedDescription)
+            NetworkMonitor.shared.isServerReachable = false
             return nil
         }
     }
     
     func fetchPlaylist(id: Int) async -> PlaylistWithSongsDTO? {
+        guard NetworkMonitor.shared.isConnected else {
+            return nil
+        }
+
         let urlString = AppConfig.API.Endpoints.getPlaylist(playlistId: id)
         guard let url = URL(string: urlString) else {
             error = .invalidURL
@@ -100,13 +111,15 @@ class PlaylistService: ObservableObject {
         }
         
         do {
-            let (data, response) = try await URLSession.shared.data(from: url)
+            let (data, response) = try await AppConfig.API.urlSession.data(from: url)
             
             guard let httpResponse = response as? HTTPURLResponse,
                   (200...299).contains(httpResponse.statusCode) else {
-                error = .networkError("Server returned an error")
+                NetworkMonitor.shared.isServerReachable = false
                 return nil
             }
+            
+            NetworkMonitor.shared.isServerReachable = true
             
             let decoder = JSONDecoder()
             decoder.keyDecodingStrategy = .convertFromSnakeCase
@@ -118,7 +131,7 @@ class PlaylistService: ObservableObject {
             error = .decodingError(decodingError.localizedDescription)
             return nil
         } catch {
-            self.error = .networkError(error.localizedDescription)
+            NetworkMonitor.shared.isServerReachable = false
             return nil
         }
     }

@@ -73,16 +73,20 @@ final class SongService {
     
     func fetchSongs(page: Int = 1, reset: Bool = false) async {
         guard !isLoading else { return }
-        
-        if reset {
-            songs = []
-            currentPage = 1
+
+        guard NetworkMonitor.shared.isConnected else {
+            return
         }
         
         isLoading = true
         error = nil
         
         defer { isLoading = false }
+
+        if reset {
+            songs = []
+            currentPage = 1
+        }
         
         let urlString = AppConfig.API.Endpoints.getSongs(page: page, pageSize: pageSize)
         guard let url = URL(string: urlString) else {
@@ -91,13 +95,15 @@ final class SongService {
         }
         
         do {
-            let (data, response) = try await URLSession.shared.data(from: url)
+            let (data, response) = try await AppConfig.API.urlSession.data(from: url)
             
             guard let httpResponse = response as? HTTPURLResponse,
                   (200...299).contains(httpResponse.statusCode) else {
-                error = .networkError("Server returned an error")
+                NetworkMonitor.shared.isServerReachable = false
                 return
             }
+            
+            NetworkMonitor.shared.isServerReachable = true
             
             let decoder = JSONDecoder()
             let paginatedResponse = try decoder.decode(PaginatedSongsResponse.self, from: data)
@@ -116,7 +122,7 @@ final class SongService {
         } catch let decodingError as DecodingError {
             error = .decodingError(decodingError.localizedDescription)
         } catch {
-            self.error = .networkError(error.localizedDescription)
+            NetworkMonitor.shared.isServerReachable = false
         }
     }
     

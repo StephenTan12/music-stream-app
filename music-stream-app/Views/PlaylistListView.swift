@@ -13,6 +13,7 @@ struct PlaylistListView: View {
     @State private var audioPlayer = AudioPlayerService.shared
     @State private var playlistService = PlaylistService.shared
     @State private var downloadService = DownloadService.shared
+    @State private var networkMonitor = NetworkMonitor.shared
     @State private var hasLoadedOnce = false
     @State private var isInitialLoad = true
     @State private var showDownloadStorage = false
@@ -40,6 +41,30 @@ struct PlaylistListView: View {
                 playlistsView
             }
         }
+        .navigationTitle("Playlists")
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                if !networkMonitor.isConnected {
+                    Image(systemName: "wifi.slash")
+                        .foregroundStyle(.secondary)
+                } else if !networkMonitor.isServerReachable {
+                    Image(systemName: "exclamationmark.icloud")
+                        .foregroundStyle(.orange)
+                }
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    showDownloadStorage = true
+                } label: {
+                    Image(systemName: "arrow.down.circle")
+                }
+                .accessibilityLabel("Downloads")
+                .id("downloads-storage-button")
+            }
+        }
+        .sheet(isPresented: $showDownloadStorage) {
+            DownloadStorageView()
+        }
         .task {
             if !hasLoadedOnce {
                 await playlistService.syncPlaylistMetadata(modelContext: modelContext)
@@ -47,7 +72,10 @@ struct PlaylistListView: View {
                 isInitialLoad = false
             }
         }
-        .alert("Error", isPresented: .constant(playlistService.error != nil)) {
+        .alert("Error", isPresented: Binding(
+            get: { playlistService.error != nil },
+            set: { if !$0 { playlistService.error = nil } }
+        )) {
             Button("OK") {
                 playlistService.error = nil
             }
@@ -85,21 +113,6 @@ struct PlaylistListView: View {
             }
         }
         .contentMargins(.bottom, hasMiniPlayer ? 60 : 0, for: .scrollContent)
-        .navigationTitle("Playlists")
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    showDownloadStorage = true
-                } label: {
-                    Image(systemName: "arrow.down.circle")
-                }
-                .accessibilityLabel("Downloads")
-                .id("downloads-storage-button")
-            }
-        }
-        .sheet(isPresented: $showDownloadStorage) {
-            DownloadStorageView()
-        }
         .refreshable {
             await playlistService.syncPlaylistMetadata(modelContext: modelContext)
         }

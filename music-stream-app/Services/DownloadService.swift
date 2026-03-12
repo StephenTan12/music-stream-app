@@ -15,6 +15,7 @@ enum DownloadError: LocalizedError {
     case downloadFailed(String)
     case fileSystemError(String)
     case noVideoId
+    case noInternet
     case alreadyDownloading
     case alreadyDownloaded
     
@@ -28,6 +29,8 @@ enum DownloadError: LocalizedError {
             return "File system error: \(message)"
         case .noVideoId:
             return "Song has no video ID"
+        case .noInternet:
+            return "No internet connection"
         case .alreadyDownloading:
             return "Song is already downloading"
         case .alreadyDownloaded:
@@ -75,6 +78,10 @@ final class DownloadService {
     }
     
     func downloadSong(_ song: Song) async throws {
+        guard NetworkMonitor.shared.isConnected else {
+            throw DownloadError.noInternet
+        }
+
         guard let videoId = song.videoId else {
             throw DownloadError.noVideoId
         }
@@ -142,7 +149,7 @@ final class DownloadService {
             return
         }
         
-        let (tempURL, response) = try await URLSession.shared.download(from: url, delegate: DownloadProgressDelegate { [weak self] progress in
+        let (tempURL, response) = try await AppConfig.API.urlSession.download(from: url, delegate: DownloadProgressDelegate { [weak self] progress in
             Task { @MainActor in
                 self?.activeDownloads[videoId] = progress * 0.9
                 song.downloadProgress = progress * 0.9
@@ -171,6 +178,14 @@ final class DownloadService {
             }
             return
         }
+
+        guard NetworkMonitor.shared.isConnected else {
+            await MainActor.run {
+                activeDownloads[videoId] = 1.0
+                song.downloadProgress = 1.0
+            }
+            return
+        }
         
         let relativePath = "\(AppConfig.Downloads.artworkDirectory)/\(videoId).jpg"
         let destinationURL = artworkDestinationURL(for: videoId)
@@ -183,7 +198,7 @@ final class DownloadService {
         }
         
         do {
-            let (data, response) = try await URLSession.shared.data(from: artworkURL)
+            let (data, response) = try await AppConfig.API.urlSession.data(from: artworkURL)
             
             guard let httpResponse = response as? HTTPURLResponse,
                   (200...299).contains(httpResponse.statusCode) else {

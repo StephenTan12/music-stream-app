@@ -8,6 +8,7 @@ import Network
 import Observation
 
 @Observable
+@MainActor
 final class NetworkMonitor {
     static let shared = NetworkMonitor()
     
@@ -15,6 +16,7 @@ final class NetworkMonitor {
     private let queue = DispatchQueue(label: "NetworkMonitor")
     
     var isConnected: Bool = true
+    var isServerReachable: Bool = true
     var connectionType: ConnectionType = .unknown
     
     enum ConnectionType {
@@ -31,8 +33,12 @@ final class NetworkMonitor {
     private func startMonitoring() {
         monitor.pathUpdateHandler = { [weak self] path in
             DispatchQueue.main.async {
-                self?.isConnected = path.status == .satisfied
+                let isConnected = path.status == .satisfied
+                self?.isConnected = isConnected
                 self?.connectionType = self?.getConnectionType(path) ?? .unknown
+                if !isConnected {
+                    self?.isServerReachable = true
+                }
             }
         }
         monitor.start(queue: queue)

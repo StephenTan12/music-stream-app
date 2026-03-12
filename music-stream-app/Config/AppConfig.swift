@@ -7,8 +7,15 @@ import Foundation
 
 enum AppConfig {
     enum API {
-        static var baseURL: String = "http://localhost:8000"
-        static let defaultPageSize = 20
+        static var baseURL: String = "http://0.0.0.0:8000"
+        static let defaultPageSize = 50
+        static let requestTimeoutSeconds: TimeInterval = 3.0
+        static let urlSession: URLSession = {
+            let configuration = URLSessionConfiguration.default
+            configuration.timeoutIntervalForRequest = requestTimeoutSeconds
+            configuration.timeoutIntervalForResource = requestTimeoutSeconds
+            return URLSession(configuration: configuration)
+        }()
         
         enum Endpoints {
             static func streamSong(videoId: String) -> String {

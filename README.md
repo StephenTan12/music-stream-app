@@ -17,7 +17,7 @@ A SwiftUI-based iOS music streaming application that plays audio from remote .mp
 - **Repeat Modes** - Off, repeat all, or repeat one track
 - **Queue Management** - View and manage the current playback queue
 - **Error Handling** - User-friendly error messages for playback failures
-- **Network Monitoring** - Offline detection with visual indicator
+- **Network Monitoring** - Offline and server status detection with nav bar icons
 - **Buffering Indicators** - Visual feedback during loading and buffering
 - **Session Persistence** - Resume playback where you left off after app restart
 - **Image Caching** - Efficient artwork caching to reduce network usage
@@ -168,10 +168,14 @@ Backend playlist synchronization service:
 
 ### NetworkMonitor
 
-Real-time network connectivity monitoring using `NWPathMonitor`:
+Real-time network connectivity and server reachability monitoring using `NWPathMonitor`:
 - Detects WiFi, cellular, and wired connections
-- Shows offline banner when disconnected
-- Prevents playback attempts without internet
+- Tracks server reachability (`isServerReachable`) based on API response success/failure
+- Connection status shown via nav bar icons:
+  - `wifi.slash` (gray) - Device is offline
+  - `exclamationmark.icloud` (orange) - Device online but server unreachable
+- Prevents streaming playback attempts without internet
+- Used as a preflight guard so network-dependent services can skip requests while offline
 
 ### CachedAsyncImage
 
@@ -179,6 +183,7 @@ Efficient image loading and caching:
 - LRU cache with configurable capacity
 - Async loading with placeholder support
 - Reduces network requests for repeated images
+- Skips remote image fetches entirely while offline
 - Debug logging for load failures
 
 ### GradientPlaceholderView
@@ -246,9 +251,20 @@ Download songs for offline listening:
 - Downloaded songs play from local storage without network
 - Playback automatically uses local files when available, including artwork in Now Playing and on the lock screen
 - Session persistence includes local file paths for seamless restore
+- Restored playback does not attempt remote stream URLs when offline
+- Lock-screen artwork fetch is skipped when offline (uses local/cached artwork only)
 - Downloads persist across app sessions in Documents directory
 - Stale download paths are cleaned up automatically on app startup
 - Download-state rendering avoids synchronous `FileManager` checks in SwiftUI rows
+
+### Offline Network Guardrails
+- When disconnected (no WiFi/cellular, including airplane mode), the app short-circuits network calls before `URLSession` is used
+- `SongService` skips paginated song fetches while offline (silent fail, no error alerts)
+- `PlaylistService` skips playlist list/detail sync requests while offline (silent fail, no error alerts)
+- On server errors, services set `NetworkMonitor.shared.isServerReachable = false` to show the server status icon
+- `CachedAsyncImage` skips remote artwork fetches while offline
+- `DownloadService` blocks new downloads while offline and avoids artwork requests during disconnected states
+- `AudioPlayerService` skips remote artwork requests and restored streaming attempts while offline
 
 ## Error Handling
 

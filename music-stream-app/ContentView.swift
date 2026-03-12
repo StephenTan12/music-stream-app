@@ -10,7 +10,6 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.modelContext) private var modelContext
     @State private var audioPlayer = AudioPlayerService.shared
-    @State private var networkMonitor = NetworkMonitor.shared
     @State private var downloadService = DownloadService.shared
     @State private var songService = SongService.shared
     @State private var showNowPlaying = false
@@ -23,20 +22,6 @@ struct ContentView: View {
                     .navigationDestination(for: Playlist.self) { playlist in
                         PlaylistDetailView(playlist: playlist, audioPlayer: audioPlayer)
                     }
-            }
-            .safeAreaInset(edge: .top, spacing: 0) {
-                if !networkMonitor.isConnected {
-                    HStack {
-                        Image(systemName: "wifi.slash")
-                        Text("No Internet Connection")
-                            .font(.subheadline)
-                            .fontWeight(.medium)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
-                    .background(Color.red)
-                    .foregroundStyle(.white)
-                }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 MiniPlayerView(audioPlayer: audioPlayer, showNowPlaying: $showNowPlaying)

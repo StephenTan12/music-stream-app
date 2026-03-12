@@ -75,6 +75,8 @@ struct CachedAsyncImage<Content: View, Placeholder: View>: View {
     
     private func loadImage() async {
         guard let url = url else { return }
+
+        guard NetworkMonitor.shared.isConnected else { return }
         
         if let cached = await ImageCache.shared.image(for: url) {
             cachedImage = cached
@@ -82,7 +84,7 @@ struct CachedAsyncImage<Content: View, Placeholder: View>: View {
         }
         
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
+            let (data, _) = try await AppConfig.API.urlSession.data(from: url)
             if let uiImage = UIImage(data: data) {
                 let image = Image(uiImage: uiImage)
                 await ImageCache.shared.setImage(image, for: url)
