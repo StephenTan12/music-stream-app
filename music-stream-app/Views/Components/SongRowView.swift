@@ -11,16 +11,16 @@ struct SongRowView: View {
     let isCurrentSong: Bool
     let isActuallyPlaying: Bool
     let showMenu: Bool
+    let hideDownloadIndicator: Bool
     let onTap: () -> Void
     
-    @State private var downloadService = DownloadService.shared
-    
-    init(song: Song, index: Int? = nil, isPlaying: Bool = false, isActuallyPlaying: Bool = false, showMenu: Bool = true, onTap: @escaping () -> Void) {
+    init(song: Song, index: Int? = nil, isPlaying: Bool = false, isActuallyPlaying: Bool = false, showMenu: Bool = true, hideDownloadIndicator: Bool = false, onTap: @escaping () -> Void) {
         self.song = song
         self.index = index
         self.isCurrentSong = isPlaying
         self.isActuallyPlaying = isActuallyPlaying
         self.showMenu = showMenu
+        self.hideDownloadIndicator = hideDownloadIndicator
         self.onTap = onTap
     }
     
@@ -45,7 +45,7 @@ struct SongRowView: View {
                         .lineLimit(1)
                     
                     HStack(spacing: 4) {
-                        if song.isDownloaded {
+                        if song.isDownloaded && !hideDownloadIndicator {
                             Image(systemName: "arrow.down.circle.fill")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
@@ -93,20 +93,20 @@ struct SongRowView: View {
                 
                 if song.isDownloaded {
                     Button(role: .destructive) {
-                        downloadService.removeSongDownload(song)
+                        DownloadService.shared.removeSongDownload(song)
                     } label: {
                         Label("Remove Download", systemImage: "trash")
                     }
                 } else if song.isDownloading {
                     Button(role: .destructive) {
-                        downloadService.cancelDownload(for: song)
+                        DownloadService.shared.cancelDownload(for: song)
                     } label: {
                         Label("Cancel Download", systemImage: "xmark.circle")
                     }
                 } else {
                     Button {
                         Task {
-                            try? await downloadService.downloadSong(song)
+                            try? await DownloadService.shared.downloadSong(song)
                         }
                     } label: {
                         Label("Download", systemImage: "arrow.down.circle")
@@ -164,7 +164,7 @@ struct SongRowView: View {
             label = "Track \(index), " + label
         }
         label += ", \(song.formattedDuration)"
-        if song.isDownloaded {
+        if song.isDownloaded && !hideDownloadIndicator {
             label += ", downloaded"
         }
         return label

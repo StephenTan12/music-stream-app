@@ -7,6 +7,18 @@ import SwiftUI
 import SwiftData
 
 struct ContentView: View {
+    @State private var serverConfig = ServerConfigService.shared
+    
+    var body: some View {
+        if serverConfig.isConfigured {
+            MainContentView()
+        } else {
+            ServerSetupView()
+        }
+    }
+}
+
+struct MainContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.modelContext) private var modelContext
     @State private var audioPlayer = AudioPlayerService.shared

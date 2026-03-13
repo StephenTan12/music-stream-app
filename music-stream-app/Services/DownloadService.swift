@@ -54,17 +54,38 @@ final class DownloadService {
     var activeDownloads: [String: Double] = [:]
     var totalStorageUsed: Int64 = 0
     
+    private(set) var currentPlaylistDownloadId: UUID?
+    private(set) var playlistDownloadProgress: Double = 0
+    private var playlistTotalSongs: Int = 0
+    private var playlistCompletedSongs: Int = 0
+    private var playlistCurrentSongProgress: Double = 0
+    
+    private var pendingProgressUpdate: (videoId: String, progress: Double)?
+    private var progressUpdateTask: Task<Void, Never>?
+    private var storageRefreshTask: Task<Void, Never>?
+    private var lastStorageRefresh: CFAbsoluteTime = 0
+    
+    private var pendingSingleSongProgress: (videoId: String, song: Song, progress: Double)?
+    private var singleSongProgressTask: Task<Void, Never>?
+    
     private init() {
-        createDownloadDirectories()
         Task {
+            await createDownloadDirectoriesAsync()
             await refreshStorageUsage()
         }
     }
     
-    private func createDownloadDirectories() {
-        do {
-            try Self.createDownloadDirectoriesIfNeeded()
-        } catch {
+    private func createDownloadDirectoriesAsync() async {
+        let result: Error? = await Task.detached(priority: .utility) {
+            do {
+                try Self.createDownloadDirectoriesIfNeeded()
+                return nil
+            } catch {
+                return error
+            }
+        }.value
+        
+        if let error = result {
             logger.error("Failed to create download directories: \(error.localizedDescription)")
         }
     }
@@ -98,7 +119,7 @@ final class DownloadService {
         song.downloadProgress = 0
         activeDownloads[videoId] = 0
         
-        let task = Task<Void, Error> {
+        let task = Task<Void, Error>(priority: .utility) {
             do {
                 try await downloadAudioFile(for: song, videoId: videoId)
                 try await downloadArtwork(for: song, videoId: videoId)
@@ -109,7 +130,7 @@ final class DownloadService {
                     activeDownloads.removeValue(forKey: videoId)
                     downloadTasks.removeValue(forKey: videoId)
                 }
-                await refreshStorageUsage()
+                scheduleStorageRefresh()
                 
                 logger.info("Successfully downloaded song: \(song.title)")
             } catch {
@@ -126,7 +147,7 @@ final class DownloadService {
                     activeDownloads.removeValue(forKey: videoId)
                     downloadTasks.removeValue(forKey: videoId)
                 }
-                await refreshStorageUsage()
+                scheduleStorageRefresh()
                 throw error
             }
         }
@@ -136,7 +157,8 @@ final class DownloadService {
     }
     
     private func downloadAudioFile(for song: Song, videoId: String) async throws {
-        guard let url = URL(string: song.streamURL) else {
+        let streamURLString = AppConfig.API.Endpoints.streamSong(videoId: videoId)
+        guard let url = URL(string: streamURLString) else {
             throw DownloadError.invalidURL
         }
         
@@ -151,8 +173,7 @@ final class DownloadService {
         
         let (tempURL, response) = try await AppConfig.API.urlSession.download(from: url, delegate: DownloadProgressDelegate { [weak self] progress in
             Task { @MainActor in
-                self?.activeDownloads[videoId] = progress * 0.9
-                song.downloadProgress = progress * 0.9
+                self?.scheduleSingleSongProgressUpdate(videoId: videoId, song: song, progress: progress * 0.9)
             }
         })
         
@@ -222,15 +243,242 @@ final class DownloadService {
     
     func downloadPlaylist(_ playlist: Playlist) async throws {
         let songs = playlist.songs.filter { !$0.isDownloaded && !$0.isDownloading }
+        guard !songs.isEmpty else { return }
+        
+        currentPlaylistDownloadId = playlist.id
+        playlistTotalSongs = songs.count
+        playlistCompletedSongs = 0
+        playlistCurrentSongProgress = 0
+        updateAggregateProgress()
+        
+        defer {
+            currentPlaylistDownloadId = nil
+            playlistDownloadProgress = 0
+            playlistTotalSongs = 0
+            playlistCompletedSongs = 0
+            playlistCurrentSongProgress = 0
+        }
         
         for song in songs {
             do {
-                try await downloadSong(song)
+                try await downloadSongForPlaylist(song)
+                playlistCompletedSongs += 1
+                playlistCurrentSongProgress = 0
+                updateAggregateProgress()
             } catch DownloadError.alreadyDownloaded, DownloadError.alreadyDownloading {
+                playlistCompletedSongs += 1
+                updateAggregateProgress()
                 continue
+            } catch is CancellationError {
+                break
             } catch {
                 logger.error("Failed to download song \(song.title) in playlist: \(error.localizedDescription)")
+                playlistCompletedSongs += 1
+                updateAggregateProgress()
             }
+        }
+    }
+    
+    private func updateAggregateProgress() {
+        guard playlistTotalSongs > 0 else {
+            playlistDownloadProgress = 0
+            return
+        }
+        let completedPortion = Double(playlistCompletedSongs)
+        let currentPortion = playlistCurrentSongProgress
+        playlistDownloadProgress = (completedPortion + currentPortion) / Double(playlistTotalSongs)
+    }
+    
+    private func scheduleProgressUpdate(videoId: String, songProgress: Double, aggregateProgress: Double) {
+        pendingProgressUpdate = (videoId, songProgress)
+        
+        guard progressUpdateTask == nil else { return }
+        
+        progressUpdateTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(50))
+            guard let self = self, !Task.isCancelled else { return }
+            
+            if let pending = self.pendingProgressUpdate {
+                self.activeDownloads[pending.videoId] = pending.progress
+                self.playlistCurrentSongProgress = pending.progress
+                self.updateAggregateProgress()
+                self.pendingProgressUpdate = nil
+            }
+            self.progressUpdateTask = nil
+        }
+    }
+    
+    private func scheduleSingleSongProgressUpdate(videoId: String, song: Song, progress: Double) {
+        pendingSingleSongProgress = (videoId, song, progress)
+        
+        guard singleSongProgressTask == nil else { return }
+        
+        singleSongProgressTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(50))
+            guard let self = self, !Task.isCancelled else { return }
+            
+            if let pending = self.pendingSingleSongProgress {
+                self.activeDownloads[pending.videoId] = pending.progress
+                pending.song.downloadProgress = pending.progress
+                self.pendingSingleSongProgress = nil
+            }
+            self.singleSongProgressTask = nil
+        }
+    }
+    
+    private func scheduleStorageRefresh() {
+        let now = CFAbsoluteTimeGetCurrent()
+        guard now - lastStorageRefresh > 2.0 else { return }
+        
+        storageRefreshTask?.cancel()
+        storageRefreshTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            guard let self = self, !Task.isCancelled else { return }
+            self.lastStorageRefresh = CFAbsoluteTimeGetCurrent()
+            await self.refreshStorageUsage()
+            self.storageRefreshTask = nil
+        }
+    }
+    
+    private func downloadSongForPlaylist(_ song: Song) async throws {
+        guard NetworkMonitor.shared.isConnected else {
+            throw DownloadError.noInternet
+        }
+
+        guard let videoId = song.videoId else {
+            throw DownloadError.noVideoId
+        }
+        
+        if song.isDownloaded {
+            throw DownloadError.alreadyDownloaded
+        }
+        
+        if song.isDownloading || activeDownloads[videoId] != nil {
+            throw DownloadError.alreadyDownloading
+        }
+        
+        song.isDownloading = true
+        activeDownloads[videoId] = 0
+        
+        let task = Task<Void, Error>(priority: .utility) {
+            do {
+                try await downloadAudioFileForPlaylist(for: song, videoId: videoId)
+                try await downloadArtworkForPlaylist(for: song, videoId: videoId)
+                
+                await MainActor.run {
+                    song.isDownloading = false
+                    song.downloadProgress = nil
+                    activeDownloads.removeValue(forKey: videoId)
+                    downloadTasks.removeValue(forKey: videoId)
+                }
+                scheduleStorageRefresh()
+                
+                logger.info("Successfully downloaded song: \(song.title)")
+            } catch {
+                try? await Self.removeItemsIfPresent(at: [
+                    audioDestinationURL(for: videoId),
+                    artworkDestinationURL(for: videoId)
+                ])
+                
+                await MainActor.run {
+                    song.isDownloading = false
+                    song.downloadProgress = nil
+                    song.localFilePath = nil
+                    song.localArtworkPath = nil
+                    activeDownloads.removeValue(forKey: videoId)
+                    downloadTasks.removeValue(forKey: videoId)
+                }
+                scheduleStorageRefresh()
+                throw error
+            }
+        }
+        
+        downloadTasks[videoId] = task
+        try await task.value
+    }
+    
+    private func downloadAudioFileForPlaylist(for song: Song, videoId: String) async throws {
+        let streamURLString = AppConfig.API.Endpoints.streamSong(videoId: videoId)
+        guard let url = URL(string: streamURLString) else {
+            throw DownloadError.invalidURL
+        }
+        
+        let relativePath = "\(AppConfig.Downloads.directory)/\(videoId).mp4"
+        let destinationURL = audioDestinationURL(for: videoId)
+        
+        if FileManager.default.fileExists(atPath: destinationURL.path) {
+            song.localFilePath = relativePath
+            playlistCurrentSongProgress = 0.9
+            updateAggregateProgress()
+            logger.info("Audio file already exists for \(song.title), skipping download")
+            return
+        }
+        
+        let (tempURL, response) = try await AppConfig.API.urlSession.download(from: url, delegate: DownloadProgressDelegate { [weak self] progress in
+            Task { @MainActor in
+                self?.scheduleProgressUpdate(videoId: videoId, songProgress: progress * 0.9, aggregateProgress: 0)
+            }
+        })
+        
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode) else {
+            throw DownloadError.downloadFailed("Invalid server response")
+        }
+        
+        do {
+            try await Self.moveDownloadedItem(from: tempURL, to: destinationURL)
+            song.localFilePath = relativePath
+        } catch {
+            throw DownloadError.fileSystemError(error.localizedDescription)
+        }
+    }
+    
+    private func downloadArtworkForPlaylist(for song: Song, videoId: String) async throws {
+        guard let artworkURLString = song.artworkURL,
+              let artworkURL = URL(string: artworkURLString) else {
+            playlistCurrentSongProgress = 1.0
+            updateAggregateProgress()
+            return
+        }
+
+        guard NetworkMonitor.shared.isConnected else {
+            playlistCurrentSongProgress = 1.0
+            updateAggregateProgress()
+            return
+        }
+        
+        let relativePath = "\(AppConfig.Downloads.artworkDirectory)/\(videoId).jpg"
+        let destinationURL = artworkDestinationURL(for: videoId)
+        
+        if FileManager.default.fileExists(atPath: destinationURL.path) {
+            song.localArtworkPath = relativePath
+            activeDownloads[videoId] = 1.0
+            playlistCurrentSongProgress = 1.0
+            updateAggregateProgress()
+            return
+        }
+        
+        do {
+            let (data, response) = try await AppConfig.API.urlSession.data(from: artworkURL)
+            
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200...299).contains(httpResponse.statusCode) else {
+                activeDownloads[videoId] = 1.0
+                playlistCurrentSongProgress = 1.0
+                updateAggregateProgress()
+                return
+            }
+            
+            try await Self.writeDownloadedData(data, to: destinationURL)
+            song.localArtworkPath = relativePath
+            activeDownloads[videoId] = 1.0
+            playlistCurrentSongProgress = 1.0
+            updateAggregateProgress()
+        } catch {
+            logger.warning("Failed to download artwork for \(song.title): \(error.localizedDescription)")
+            activeDownloads[videoId] = 1.0
+            playlistCurrentSongProgress = 1.0
+            updateAggregateProgress()
         }
     }
     
@@ -241,6 +489,12 @@ final class DownloadService {
         downloadTasks.removeValue(forKey: videoId)
         activeDownloads.removeValue(forKey: videoId)
         
+        if pendingSingleSongProgress?.videoId == videoId {
+            pendingSingleSongProgress = nil
+            singleSongProgressTask?.cancel()
+            singleSongProgressTask = nil
+        }
+        
         let urlsToRemove = [song.localFilePath, song.localArtworkPath]
             .compactMap { $0 }
             .map { Self.cachesDirectory.appendingPathComponent($0) }
@@ -250,18 +504,31 @@ final class DownloadService {
         song.localFilePath = nil
         song.localArtworkPath = nil
         
-        Task {
+        Task(priority: .utility) {
             try? await Self.removeItemsIfPresent(at: urlsToRemove)
-            await refreshStorageUsage()
+            await MainActor.run { scheduleStorageRefresh() }
         }
     }
     
     func cancelPlaylistDownload(_ playlist: Playlist) {
+        currentPlaylistDownloadId = nil
+        playlistDownloadProgress = 0
+        playlistTotalSongs = 0
+        playlistCompletedSongs = 0
+        playlistCurrentSongProgress = 0
+        pendingProgressUpdate = nil
+        progressUpdateTask?.cancel()
+        progressUpdateTask = nil
+        
         for song in playlist.songs {
             if song.isDownloading {
                 cancelDownload(for: song)
             }
         }
+    }
+    
+    func isDownloadingPlaylist(_ playlist: Playlist) -> Bool {
+        currentPlaylistDownloadId == playlist.id
     }
     
     func removeSongDownload(_ song: Song) {
@@ -274,9 +541,9 @@ final class DownloadService {
         song.isDownloading = false
         song.downloadProgress = nil
         
-        Task {
+        Task(priority: .utility) {
             try? await Self.removeItemsIfPresent(at: urlsToRemove)
-            await refreshStorageUsage()
+            await MainActor.run { scheduleStorageRefresh() }
         }
     }
     
@@ -296,9 +563,12 @@ final class DownloadService {
         downloadTasks.removeAll()
         totalStorageUsed = 0
         
-        Task {
+        Task(priority: .utility) {
             try? await Self.resetDownloadDirectories()
-            await refreshStorageUsage()
+            await MainActor.run { [weak self] in
+                self?.lastStorageRefresh = 0
+                self?.scheduleStorageRefresh()
+            }
         }
     }
     
@@ -453,6 +723,10 @@ final class DownloadService {
 private final class DownloadProgressDelegate: NSObject, URLSessionTaskDelegate {
     private let progressHandler: (Double) -> Void
     private weak var observedTask: URLSessionTask?
+    private var lastReportedProgress: Double = 0
+    private var lastUpdateTime: CFAbsoluteTime = 0
+    private let minProgressDelta: Double = 0.02
+    private let minTimeInterval: CFAbsoluteTime = 0.1
     
     init(progressHandler: @escaping (Double) -> Void) {
         self.progressHandler = progressHandler
@@ -482,7 +756,15 @@ private final class DownloadProgressDelegate: NSObject, URLSessionTaskDelegate {
             let expected = task.countOfBytesExpectedToReceive
             if expected > 0 {
                 let progress = Double(received) / Double(expected)
-                progressHandler(progress)
+                let now = CFAbsoluteTimeGetCurrent()
+                let timeDelta = now - lastUpdateTime
+                let progressDelta = progress - lastReportedProgress
+                
+                if progressDelta >= minProgressDelta || timeDelta >= minTimeInterval || progress >= 1.0 {
+                    lastReportedProgress = progress
+                    lastUpdateTime = now
+                    progressHandler(progress)
+                }
             }
         }
     }

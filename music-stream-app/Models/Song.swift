@@ -14,7 +14,7 @@ final class Song {
     var artist: String
     var album: String
     var duration: TimeInterval
-    var streamURL: String
+    private var storedStreamURL: String?
     var artworkURL: String?
     var dateAdded: Date
     
@@ -26,6 +26,13 @@ final class Song {
     @Relationship(deleteRule: .cascade, inverse: \PlaylistSong.song)
     var playlistSongs: [PlaylistSong]?
     
+    var streamURL: String {
+        if let videoId = videoId {
+            return AppConfig.API.Endpoints.streamSong(videoId: videoId)
+        }
+        return storedStreamURL ?? ""
+    }
+    
     init(
         id: UUID = UUID(),
         videoId: String? = nil,
@@ -33,7 +40,7 @@ final class Song {
         artist: String,
         album: String = "",
         duration: TimeInterval = 0,
-        streamURL: String,
+        streamURL: String? = nil,
         artworkURL: String? = nil,
         dateAdded: Date = Date(),
         localFilePath: String? = nil,
@@ -45,7 +52,7 @@ final class Song {
         self.artist = artist
         self.album = album
         self.duration = duration
-        self.streamURL = streamURL
+        self.storedStreamURL = streamURL
         self.artworkURL = artworkURL
         self.dateAdded = dateAdded
         self.localFilePath = localFilePath
@@ -61,12 +68,12 @@ final class Song {
         artworkURL: String? = nil
     ) {
         self.init(
+            id: UUID(),
             videoId: videoId,
             title: title,
             artist: artist,
             album: album,
             duration: duration,
-            streamURL: AppConfig.API.Endpoints.streamSong(videoId: videoId),
             artworkURL: artworkURL
         )
     }

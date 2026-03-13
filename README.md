@@ -4,6 +4,7 @@ A SwiftUI-based iOS music streaming application that plays audio from remote .mp
 
 ## Features
 
+- **Configurable Server** - Connect to any server by entering protocol, host/IP, and port on first launch or via settings
 - **Backend Playlist Sync** - Automatically sync playlists from backend API on app launch and pull-to-refresh
 - **System Playlists** - Read-only system playlists (like "All Songs") shown prominently with star badge
 - **Playlist Management** - View backend-synced playlists with full song details
@@ -46,6 +47,7 @@ music-stream-app/
 │   ├── AudioPlayerService.swift # Core audio player (AVPlayer-based)
 │   ├── DownloadService.swift    # Offline download management
 │   ├── NetworkMonitor.swift     # Network connectivity monitoring
+│   ├── ServerConfigService.swift # User-configurable server URL
 │   ├── SongService.swift        # Backend song API client
 │   └── PlaylistService.swift    # Backend playlist API client with sync
 ├── ContentView.swift            # Root view with navigation, mini player, and loading screen
@@ -57,6 +59,8 @@ music-stream-app/
 │   ├── AllSongsView.swift       # Browse songs from API
 │   ├── AddSongView.swift        # Add songs with URL validation
 │   ├── EditPlaylistView.swift   # Edit playlist details
+│   ├── SettingsView.swift       # Server configuration settings
+│   ├── ServerSetupView.swift    # First-launch server setup
 │   └── Components/
 │       ├── MiniPlayerView.swift          # Bottom mini player bar
 │       ├── SongRowView.swift             # Song list row with context menu
@@ -82,16 +86,28 @@ The app includes mock data that loads automatically on first launch with sample 
 
 ## Configuration
 
-App-wide settings are centralized in `Config/AppConfig.swift`:
+### Server Setup
+
+On first launch, you'll be prompted to configure your music server:
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| Protocol | `http` | HTTP or HTTPS |
+| Host / IP | (none) | Server IP address or domain (e.g., `192.168.1.100` or `myserver.com`) |
+| Port | `8000` | Server port number |
+
+You can change these settings anytime via the gear icon in the navigation bar.
+
+### App Settings
+
+Additional settings are in `Config/AppConfig.swift`:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `API.baseURL` | `http://localhost:8000` | Backend API base URL |
-| `API.defaultPageSize` | `20` | Songs per page for pagination |
+| `API.defaultPageSize` | `50` | Songs per page for pagination |
 | `API.Endpoints.getPlaylists()` | `/playlists` | Fetch all playlists endpoint |
 | `API.Endpoints.getPlaylist(id)` | `/playlists/{id}` | Fetch playlist with songs endpoint |
 | `Cache.maxImageCacheSize` | `50` | Max images in LRU cache |
-| `Cache.maxArtworkCacheSize` | `20` | Max artwork images for Now Playing |
 | `Playback.seekPollingIterations` | `10` | Seek UI sync iterations |
 | `Playback.seekPollingIntervalMs` | `50` | Seek polling interval (ms) |
 | `Downloads.directory` | `Downloads` | Downloaded audio files directory |
@@ -114,9 +130,19 @@ URLs are validated before saving - invalid URLs will show an inline error messag
 
 ## Architecture
 
+### ServerConfigService
+
+User-configurable server URL management:
+- Stores protocol (http/https), host/IP, and port
+- Persists settings to UserDefaults
+- Tracks first-launch configuration state
+- Provides computed `baseURL` property used by `AppConfig.API.baseURL`
+- Singleton pattern with `@MainActor` isolation
+
 ### AppConfig
 
 Centralized configuration for the entire app:
+- `API.baseURL` reads from `ServerConfigService` for user-configured server
 - API endpoints and pagination settings
 - Cache size limits for images and artwork
 - Playback timing constants
@@ -200,10 +226,11 @@ Uses SwiftData for local storage of:
 - Playlist-song relationships (nullify delete rule)
 - Backend playlists synced automatically on app launch
 
-Uses UserDefaults for playback state persistence:
+Uses UserDefaults for playback state and server configuration:
 - Current song and queue (including local file paths)
 - Playback position
 - Shuffle and repeat mode settings
+- Server configuration (protocol, host, port)
 - Automatically restored on app launch
 
 Uses Documents directory for offline downloads:

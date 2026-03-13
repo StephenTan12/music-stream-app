@@ -70,7 +70,6 @@ struct PersistedSong: Codable {
     let artist: String
     let album: String
     let duration: TimeInterval
-    let streamURL: String
     let artworkURL: String?
     let localFilePath: String?
     let localArtworkPath: String?
@@ -82,7 +81,6 @@ struct PersistedSong: Codable {
         self.artist = song.artist
         self.album = song.album
         self.duration = song.duration
-        self.streamURL = song.streamURL
         self.artworkURL = song.artworkURL
         self.localFilePath = song.localFilePath
         self.localArtworkPath = song.localArtworkPath
@@ -96,7 +94,6 @@ struct PersistedSong: Codable {
             artist: artist,
             album: album,
             duration: duration,
-            streamURL: streamURL,
             artworkURL: artworkURL,
             localFilePath: localFilePath,
             localArtworkPath: localArtworkPath
@@ -130,7 +127,9 @@ final class AudioPlayerService {
     private var artworkAccessOrder: [String] = []
     private let maxArtworkCacheSize = 20
     
-    private static let playbackStateKey = "persistedPlaybackState"
+    private nonisolated static let playbackStateKey = "persistedPlaybackState"
+    private var saveStateTask: Task<Void, Never>?
+    private let saveStateDebounceInterval: Duration = .milliseconds(500)
     
     // Playback state
     var isPlaying: Bool = false
@@ -160,12 +159,12 @@ final class AudioPlayerService {
             } else {
                 restoreOriginalQueue()
             }
-            savePlaybackState()
+            scheduleSavePlaybackState()
         }
     }
     var repeatMode: RepeatMode = .none {
         didSet {
-            savePlaybackState()
+            scheduleSavePlaybackState()
         }
     }
     
@@ -322,7 +321,7 @@ final class AudioPlayerService {
         observePlayerItem()
         updateNowPlayingInfo()
         fetchArtworkForNowPlaying(song: song)
-        savePlaybackState()
+        scheduleSavePlaybackState()
     }
     
     private func setError(_ error: PlaybackError) {
@@ -332,10 +331,16 @@ final class AudioPlayerService {
     }
     
     private func fetchArtworkForNowPlaying(song: Song) {
-        if let localArtworkURL = song.localArtworkURL,
-           let data = try? Data(contentsOf: localArtworkURL),
-           let image = UIImage(data: data) {
-            updateNowPlayingArtwork(image)
+        if let localArtworkURL = song.localArtworkURL {
+            Task.detached(priority: .userInitiated) { [weak self] in
+                guard let strongSelf = self else { return }
+                if let data = try? Data(contentsOf: localArtworkURL),
+                   let image = UIImage(data: data) {
+                    await MainActor.run {
+                        strongSelf.updateNowPlayingArtwork(image)
+                    }
+                }
+            }
             return
         }
         
@@ -403,7 +408,7 @@ final class AudioPlayerService {
                 
                 if abs(seconds - self.lastSaveTime) >= 5 {
                     self.lastSaveTime = seconds
-                    self.savePlaybackState()
+                    self.scheduleSavePlaybackState()
                 }
             }
         }
@@ -504,7 +509,7 @@ final class AudioPlayerService {
         let cmTime = CMTime(seconds: time, preferredTimescale: CMTimeScale(NSEC_PER_SEC))
         player?.seek(to: cmTime, toleranceBefore: .zero, toleranceAfter: .zero)
         currentTime = time
-        savePlaybackState()
+        scheduleSavePlaybackState()
     }
     
     func playNext() {
@@ -599,7 +604,7 @@ final class AudioPlayerService {
         if !originalQueue.contains(where: { $0.id == song.id }) {
             originalQueue.append(song)
         }
-        savePlaybackState()
+        scheduleSavePlaybackState()
     }
     
     func playFromQueue(at index: Int) {
@@ -615,18 +620,15 @@ final class AudioPlayerService {
         if index < currentIndex {
             currentIndex -= 1
         }
-        savePlaybackState()
+        scheduleSavePlaybackState()
     }
     
     func syncQueueWithPlaylist(_ playlist: [Song]) {
         let currentSongId = currentSong?.id
+        let playlistIds = Set(playlist.map { $0.id })
         
-        queue = queue.filter { song in
-            playlist.contains(where: { $0.id == song.id })
-        }
-        originalQueue = originalQueue.filter { song in
-            playlist.contains(where: { $0.id == song.id })
-        }
+        queue = queue.filter { playlistIds.contains($0.id) }
+        originalQueue = originalQueue.filter { playlistIds.contains($0.id) }
         
         if let id = currentSongId {
             if let newIndex = queue.firstIndex(where: { $0.id == id }) {
@@ -637,12 +639,21 @@ final class AudioPlayerService {
                 cleanup()
             }
         }
-        savePlaybackState()
+        scheduleSavePlaybackState()
     }
     
     // MARK: - State Persistence
     
-    func savePlaybackState() {
+    private func scheduleSavePlaybackState() {
+        saveStateTask?.cancel()
+        saveStateTask = Task { [weak self] in
+            try? await Task.sleep(for: self?.saveStateDebounceInterval ?? .milliseconds(500))
+            guard !Task.isCancelled else { return }
+            await self?.performSavePlaybackState()
+        }
+    }
+    
+    private func performSavePlaybackState() async {
         let state = PersistedPlaybackState(
             currentSong: currentSong.map { PersistedSong(from: $0) },
             queue: queue.map { PersistedSong(from: $0) },
@@ -654,9 +665,11 @@ final class AudioPlayerService {
             currentPlaylistId: currentPlaylistId?.uuidString
         )
         
-        if let encoded = try? JSONEncoder().encode(state) {
-            UserDefaults.standard.set(encoded, forKey: Self.playbackStateKey)
-        }
+        guard let encoded = try? JSONEncoder().encode(state) else { return }
+        
+        await Task.detached(priority: .utility) {
+            UserDefaults.standard.set(encoded, forKey: AudioPlayerService.playbackStateKey)
+        }.value
     }
     
     private func restorePlaybackState() {

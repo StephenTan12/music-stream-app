@@ -36,20 +36,37 @@ struct MiniPlayerView: View {
             HStack(spacing: 12) {
                 HStack(spacing: 12) {
                     ZStack {
-                        CachedAsyncImage(url: URL(string: song.artworkURL ?? "")) { image in
-                            image
-                                .resizable()
-                                .aspectRatio(contentMode: .fill)
-                        } placeholder: {
-                            RoundedRectangle(cornerRadius: 6)
-                                .fill(Color.gray.opacity(0.3))
-                                .overlay {
-                                    Image(systemName: "music.note")
-                                        .foregroundStyle(.secondary)
-                                }
+                        if let localArtworkURL = song.localArtworkURL {
+                            AsyncImage(url: localArtworkURL) { image in
+                                image
+                                    .resizable()
+                                    .aspectRatio(contentMode: .fill)
+                            } placeholder: {
+                                RoundedRectangle(cornerRadius: 6)
+                                    .fill(Color.gray.opacity(0.3))
+                                    .overlay {
+                                        Image(systemName: "music.note")
+                                            .foregroundStyle(.secondary)
+                                    }
+                            }
+                            .frame(width: 44, height: 44)
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                        } else {
+                            CachedAsyncImage(url: URL(string: song.artworkURL ?? "")) { image in
+                                image
+                                    .resizable()
+                                    .aspectRatio(contentMode: .fill)
+                            } placeholder: {
+                                RoundedRectangle(cornerRadius: 6)
+                                    .fill(Color.gray.opacity(0.3))
+                                    .overlay {
+                                        Image(systemName: "music.note")
+                                            .foregroundStyle(.secondary)
+                                    }
+                            }
+                            .frame(width: 44, height: 44)
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
                         }
-                        .frame(width: 44, height: 44)
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
                         
                         if audioPlayer.isBuffering || audioPlayer.isLoading {
                             RoundedRectangle(cornerRadius: 6)

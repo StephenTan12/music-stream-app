@@ -15,7 +15,7 @@ struct PlaylistDetailView: View {
     @State private var selectedPlayMode: PlayMode? = nil
     @State private var showNavigationTitle = false
     @State private var downloadService = DownloadService.shared
-    @State private var isDownloadingPlaylist = false
+    @State private var networkMonitor = NetworkMonitor.shared
     @State private var showRemoveDownloadsConfirmation = false
     @State private var hasSyncedPlaylist = false
     
@@ -26,25 +26,6 @@ struct PlaylistDetailView: View {
     
     private var hasMiniPlayer: Bool {
         audioPlayer.currentSong != nil
-    }
-    
-    private var downloadedSongsCount: Int {
-        playlist.songs.filter { $0.isDownloaded }.count
-    }
-    
-    private var downloadingSongsCount: Int {
-        playlist.songs.filter { $0.isDownloading }.count
-    }
-    
-    private var allSongsDownloaded: Bool {
-        !playlist.songs.isEmpty && downloadedSongsCount == playlist.songs.count
-    }
-    
-    private var playlistDownloadProgress: Double {
-        guard !playlist.songs.isEmpty else { return 0 }
-        let downloadedProgress = Double(downloadedSongsCount)
-        let downloadingProgress = playlist.songs.filter { $0.isDownloading }.reduce(0.0) { $0 + ($1.downloadProgress ?? 0) }
-        return (downloadedProgress + downloadingProgress) / Double(playlist.songs.count)
     }
     
     var body: some View {
@@ -193,20 +174,33 @@ struct PlaylistDetailView: View {
         .padding(.bottom, 16)
     }
     
+    private var isPlaylistDownloading: Bool {
+        downloadService.isDownloadingPlaylist(playlist)
+    }
+    
+    private var allSongsDownloaded: Bool {
+        let songs = playlist.songs
+        guard !songs.isEmpty else { return false }
+        return songs.allSatisfy { $0.isDownloaded }
+    }
+    
     private var songsSection: some View {
-        LazyVStack(spacing: 0) {
-            ForEach(Array(playlist.songs.enumerated()), id: \.element.id) { index, song in
+        let songs = playlist.songs
+        let songsCount = songs.count
+        return LazyVStack(spacing: 0) {
+            ForEach(Array(songs.enumerated()), id: \.element.id) { index, song in
                 SongRowView(
                     song: song,
                     isPlaying: isCurrentlyPlaying(song),
-                    isActuallyPlaying: isCurrentlyPlaying(song) && audioPlayer.isPlaying
+                    isActuallyPlaying: isCurrentlyPlaying(song) && audioPlayer.isPlaying,
+                    hideDownloadIndicator: isPlaylistDownloading
                 ) {
                     handleSongTap(song)
                 }
                 .padding(.horizontal, 20)
                 .padding(.vertical, 8)
                 
-                if index < playlist.songs.count - 1 {
+                if index < songsCount - 1 {
                     Divider()
                         .padding(.leading, 72)
                 }
@@ -243,10 +237,9 @@ struct PlaylistDetailView: View {
     
     @ViewBuilder
     private var playlistDownloadButton: some View {
-        if downloadingSongsCount > 0 {
+        if isPlaylistDownloading {
             Button {
                 downloadService.cancelPlaylistDownload(playlist)
-                isDownloadingPlaylist = false
             } label: {
                 ZStack {
                     Circle()
@@ -254,7 +247,7 @@ struct PlaylistDetailView: View {
                         .frame(width: 24, height: 24)
                     
                     Circle()
-                        .trim(from: 0, to: playlistDownloadProgress)
+                        .trim(from: 0, to: downloadService.playlistDownloadProgress)
                         .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2, lineCap: .round))
                         .frame(width: 24, height: 24)
                         .rotationEffect(.degrees(-90))
@@ -275,14 +268,14 @@ struct PlaylistDetailView: View {
             .accessibilityLabel("All songs downloaded, tap to remove downloads")
         } else {
             Button {
-                isDownloadingPlaylist = true
+                guard networkMonitor.isConnected else { return }
                 Task {
                     try? await downloadService.downloadPlaylist(playlist)
-                    isDownloadingPlaylist = false
                 }
             } label: {
                 Image(systemName: "arrow.down.circle")
             }
+            .disabled(!networkMonitor.isConnected)
             .accessibilityLabel("Download all songs")
         }
     }

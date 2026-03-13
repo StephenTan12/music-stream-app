@@ -227,19 +227,26 @@ final class PlaylistService {
             modelContext.delete(playlistSong)
         }
         
+        // Batch fetch all existing songs with videoIds to avoid N individual fetches
+        let songFetchDescriptor = FetchDescriptor<Song>(
+            predicate: #Predicate<Song> { song in
+                song.videoId != nil
+            }
+        )
+        let existingSongs = (try? modelContext.fetch(songFetchDescriptor)) ?? []
+        let existingSongsByVideoId = Dictionary(
+            uniqueKeysWithValues: existingSongs.compactMap { song -> (String, Song)? in
+                guard let videoId = song.videoId else { return nil }
+                return (videoId, song)
+            }
+        )
+        
         var playlistSongs: [PlaylistSong] = []
         for (index, songDTO) in playlistWithSongs.songs.enumerated() {
             let videoId = songDTO.id
-            let songFetchDescriptor = FetchDescriptor<Song>(
-                predicate: #Predicate<Song> { song in
-                    song.videoId == videoId
-                }
-            )
-            
-            let existingSong = try? modelContext.fetch(songFetchDescriptor).first
             
             let song: Song
-            if let existingSong = existingSong {
+            if let existingSong = existingSongsByVideoId[videoId] {
                 existingSong.title = songDTO.title
                 existingSong.artist = songDTO.artist ?? "Unknown Artist"
                 existingSong.duration = TimeInterval(songDTO.duration)
@@ -287,6 +294,20 @@ final class PlaylistService {
         
         var syncedPlaylistIds: Set<Int> = []
         
+        // Batch fetch all existing songs with videoIds once before processing playlists
+        let songFetchDescriptor = FetchDescriptor<Song>(
+            predicate: #Predicate<Song> { song in
+                song.videoId != nil
+            }
+        )
+        let existingSongs = (try? modelContext.fetch(songFetchDescriptor)) ?? []
+        var existingSongsByVideoId = Dictionary(
+            uniqueKeysWithValues: existingSongs.compactMap { song -> (String, Song)? in
+                guard let videoId = song.videoId else { return nil }
+                return (videoId, song)
+            }
+        )
+        
         for playlistDTO in playlistDTOs {
             guard let playlistWithSongs = await fetchPlaylist(id: playlistDTO.id) else {
                 continue
@@ -295,7 +316,6 @@ final class PlaylistService {
             let backendId = playlistWithSongs.id
             syncedPlaylistIds.insert(backendId)
             
-            // Check if playlist with this backendId already exists
             let playlistFetchDescriptor = FetchDescriptor<Playlist>(
                 predicate: #Predicate<Playlist> { playlist in
                     playlist.backendId == backendId
@@ -309,7 +329,6 @@ final class PlaylistService {
             
             let playlist: Playlist
             if let existingPlaylist = existingPlaylist {
-                // Update existing playlist
                 existingPlaylist.name = playlistWithSongs.name
                 existingPlaylist.playlistDescription = playlistWithSongs.description ?? ""
                 existingPlaylist.isSystem = playlistWithSongs.isSystem
@@ -318,7 +337,6 @@ final class PlaylistService {
                 existingPlaylist.lastSyncedAt = Date()
                 playlist = existingPlaylist
             } else {
-                // Create new playlist
                 playlist = Playlist(
                     name: playlistWithSongs.name,
                     playlistDescription: playlistWithSongs.description ?? "",
@@ -332,32 +350,21 @@ final class PlaylistService {
                 modelContext.insert(playlist)
             }
             
-            // Clear existing playlist songs for this playlist
             for playlistSong in playlist.playlistSongs {
                 modelContext.delete(playlistSong)
             }
             
             var playlistSongs: [PlaylistSong] = []
             for (index, songDTO) in playlistWithSongs.songs.enumerated() {
-                // Check if song with this videoId already exists (to preserve download paths)
                 let videoId = songDTO.id
-                let songFetchDescriptor = FetchDescriptor<Song>(
-                    predicate: #Predicate<Song> { song in
-                        song.videoId == videoId
-                    }
-                )
-                
-                let existingSong = try? modelContext.fetch(songFetchDescriptor).first
                 
                 let song: Song
-                if let existingSong = existingSong {
-                    // Reuse existing song to preserve download paths
+                if let existingSong = existingSongsByVideoId[videoId] {
                     existingSong.title = songDTO.title
                     existingSong.artist = songDTO.artist ?? "Unknown Artist"
                     existingSong.duration = TimeInterval(songDTO.duration)
                     song = existingSong
                 } else {
-                    // Create new song
                     song = Song(
                         videoId: songDTO.id,
                         title: songDTO.title,
@@ -365,6 +372,7 @@ final class PlaylistService {
                         duration: TimeInterval(songDTO.duration)
                     )
                     modelContext.insert(song)
+                    existingSongsByVideoId[videoId] = song
                 }
 
                 let playlistSong = PlaylistSong(

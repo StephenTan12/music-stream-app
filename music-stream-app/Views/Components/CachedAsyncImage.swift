@@ -48,7 +48,6 @@ struct CachedAsyncImage<Content: View, Placeholder: View>: View {
     let placeholder: () -> Placeholder
     
     @State private var cachedImage: Image?
-    @State private var isLoading = false
     
     init(
         url: URL?,

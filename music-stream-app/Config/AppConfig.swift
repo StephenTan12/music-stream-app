@@ -7,7 +7,9 @@ import Foundation
 
 enum AppConfig {
     enum API {
-        static var baseURL: String = "http://0.0.0.0:8000"
+        static var baseURL: String {
+            ServerConfigService.shared.baseURL
+        }
         static let defaultPageSize = 50
         static let requestTimeoutSeconds: TimeInterval = 3.0
         static let urlSession: URLSession = {

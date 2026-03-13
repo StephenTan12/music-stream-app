@@ -49,9 +49,7 @@ final class Playlist: Hashable {
     }
     
     var songs: [Song] {
-        playlistSongs
-            .compactMap { $0.song }
-            .sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+        playlistSongs.sorted { $0.order < $1.order }.compactMap { $0.song }
     }
 }
 

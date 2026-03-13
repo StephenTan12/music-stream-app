@@ -17,6 +17,7 @@ struct PlaylistListView: View {
     @State private var hasLoadedOnce = false
     @State private var isInitialLoad = true
     @State private var showDownloadStorage = false
+    @State private var showSettings = false
     
     private var hasMiniPlayer: Bool {
         audioPlayer.currentSong != nil
@@ -61,9 +62,28 @@ struct PlaylistListView: View {
                 .accessibilityLabel("Downloads")
                 .id("downloads-storage-button")
             }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    showSettings = true
+                } label: {
+                    Image(systemName: "gearshape")
+                }
+                .accessibilityLabel("Settings")
+            }
         }
         .sheet(isPresented: $showDownloadStorage) {
             DownloadStorageView()
+        }
+        .sheet(isPresented: $showSettings) {
+            SettingsView {
+                hasLoadedOnce = false
+                isInitialLoad = true
+                Task {
+                    await playlistService.syncPlaylistMetadata(modelContext: modelContext)
+                    hasLoadedOnce = true
+                    isInitialLoad = false
+                }
+            }
         }
         .task {
             if !hasLoadedOnce {
