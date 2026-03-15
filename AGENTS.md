@@ -17,9 +17,11 @@ music-stream-app/
 │   ├── Playlist.swift             # SwiftData: ordered songs via PlaylistSong join, backend sync fields (totalSongs, totalDuration)
 │   └── PlaylistSong.swift         # SwiftData: join model with order field for song ordering
 ├── Services/
-│   ├── AudioPlayerService.swift   # AVPlayer, queue, lock screen, session persistence, offline playback
+│   ├── AudioPlayerService.swift   # AVPlayer, queue, lock screen, session persistence, offline playback, mTLS streaming
+│   ├── CertificateService.swift   # mTLS client certificates, Keychain storage, P12 import, CA pinning
 │   ├── DownloadService.swift      # Offline downloads, progress tracking, storage management
 │   ├── NetworkMonitor.swift       # NWPathMonitor connectivity + server reachability
+│   ├── NetworkSessionDelegate.swift # URLSession delegate for mTLS auth challenges
 │   ├── ServerConfigService.swift  # User-configurable server URL (protocol, host, port) with UserDefaults persistence
 │   ├── SongService.swift          # Backend song API client
 │   └── PlaylistService.swift      # Backend playlist API client with sync
@@ -31,14 +33,17 @@ music-stream-app/
 │   ├── QueueView.swift            # Playback queue
 │   ├── AddSongView.swift          # URL validation
 │   ├── EditPlaylistView.swift     # Playlist editing
-│   ├── SettingsView.swift         # Server configuration sheet (protocol, host, port)
-│   ├── ServerSetupView.swift      # First-launch server setup screen
+│   ├── SettingsView.swift         # Server configuration sheet (protocol, host, port, certificate)
+│   ├── ServerSetupView.swift      # First-launch server setup screen with certificate import for HTTPS
+│   ├── CertificateImportView.swift # P12 file import with password entry
 │   └── Components/
 │       ├── MiniPlayerView.swift          # Bottom player bar
 │       ├── SongRowView.swift             # Song list row with context menu (download via long press)
 │       ├── DownloadStorageView.swift     # Download management, storage stats
 │       ├── CachedAsyncImage.swift        # LRU image cache
+│       ├── CertificateStatusView.swift   # Certificate status display with expiration warnings
 │       └── GradientPlaceholderView.swift # Missing artwork placeholder
+├── ca.crt                         # Bundled CA certificate for server trust pinning
 └── Assets.xcassets/               # App assets, launch screen color
 ```
 
@@ -189,6 +194,53 @@ Session persistence is optimized to avoid blocking the main thread:
 1. **Debounced Saves**: `scheduleSavePlaybackState()` debounces saves with 500ms delay to coalesce frequent updates
 2. **Background Encoding**: `performSavePlaybackState()` encodes JSON and writes to UserDefaults via `Task.detached(priority: .utility)`
 3. **Async Artwork Loading**: `fetchArtworkForNowPlaying` loads local artwork via `Task.detached` to avoid blocking main thread with `Data(contentsOf:)`
+
+### HTTPS/mTLS Authentication
+
+The app supports mutual TLS (mTLS) for secure server connections:
+
+1. **Certificate Import Flow**:
+   - User selects HTTPS protocol in `ServerSetupView` or `SettingsView`
+   - Certificate section appears with `CertificateStatusView`
+   - User taps "Import Certificate" to open `CertificateImportView`
+   - User selects .p12 file and enters password
+   - `CertificateService.importP12()` extracts identity and stores in Keychain
+
+2. **Keychain Storage** (secure, no file persistence):
+   - `SecIdentity` stored with `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`
+   - P12 file data zeroed from memory after import (password NOT stored - only needed for extraction)
+   - First-launch cleanup removes orphaned Keychain items from previous installs
+   - Static caching via `nonisolated(unsafe)` properties to avoid repeated Keychain lookups
+
+3. **Network Session Authentication**:
+   - `AppConfig.API.urlSession` returns `authenticatedURLSession` for HTTPS
+   - `NetworkSessionDelegate` handles two challenge types:
+     - Server trust: CA pinning via bundled `ca.crt`
+     - Client certificate: Provides `SecIdentity` from Keychain
+
+4. **AVPlayer mTLS Streaming**:
+   - Uses custom URL scheme `mtls-stream://` for HTTPS streams
+   - `MTLSResourceLoaderDelegate` (in AudioPlayerService) intercepts requests
+   - Converts to `https://` and routes through authenticated `URLSession`
+   - Supports byte-range requests via HTTP `Range` headers for efficient streaming
+   - Implements `didCancel` to cancel in-flight requests on seek/skip
+
+5. **External P12 File Opening**:
+   - App registered as .p12 file handler via Info.plist
+   - `onOpenURL` in app entry point sets `CertificateService.pendingImportURL`
+   - `CertificateImportView` checks for pending URL on appear
+
+6. **Certificate Status UI**:
+   - `CertificateStatusView` shows: installed (green), expiring soon (orange), expired (red), or missing (orange)
+   - Displays common name and expiration date
+   - Remove button clears Keychain data
+   - Status row has VoiceOver accessibility support
+
+**Import Certificate**: Use `CertificateService.shared.importP12(from: url, password: password)` with async/await. The URL should be from `fileImporter` with security-scoped access.
+
+**Check Certificate Status**: Use `CertificateService.shared.isClientCertificateConfigured` to verify a certificate is available. Certificate and CA lookups are cached to avoid repeated Keychain/file access.
+
+**Certificate for URLSession**: `NetworkSessionDelegate.shared` automatically uses static `nonisolated` methods on `CertificateService` (`clientCredentialSync`, `loadPinnedCACertificateSync`) for authentication challenges - these do not access the `shared` instance to avoid actor isolation issues.
 
 ### Offline Network Guardrails
 
@@ -494,6 +546,68 @@ guard let encoded = try? JSONEncoder().encode(state) else { return }
 await Task.detached {
     UserDefaults.standard.set(encoded, forKey: key) // Data is Sendable
 }.value
+
+// ❌ Access @MainActor CertificateService.shared from URLSession delegate queue
+func urlSession(_ session: URLSession, didReceive challenge: ...) {
+    let cert = CertificateService.shared.loadPinnedCACertificate() // Error: @MainActor
+}
+
+// ✅ Use static nonisolated methods (don't access .shared from nonisolated context)
+func urlSession(_ session: URLSession, didReceive challenge: ...) {
+    let cert = CertificateService.loadPinnedCACertificateSync() // static nonisolated
+    let credential = CertificateService.clientCredentialSync // static nonisolated
+}
+
+// ❌ Use nonisolated on mutable static properties (Swift 6 error)
+private nonisolated static var cache: SecIdentity?
+
+// ✅ Use nonisolated(unsafe) for mutable caches with controlled writes
+// Only safe when writes are limited to MainActor methods (import/removal)
+private nonisolated(unsafe) static var cache: SecIdentity?
+private nonisolated(unsafe) static var cacheValid = false
+
+// ❌ Store P12 file in Documents directory (security risk)
+let p12Path = documentsDirectory.appendingPathComponent("client.p12")
+try p12Data.write(to: p12Path)
+
+// ✅ Import identity to Keychain, never persist P12 file
+let identity = try extractIdentity(from: p12Data, password: password)
+try storeIdentityInKeychain(identity)
+p12Data.resetBytes(in: p12Data.startIndex..<p12Data.endIndex) // Zero memory
+
+// ❌ Use URLCredential.Persistence.forSession (may persist longer than needed)
+URLCredential(identity: identity, certificates: nil, persistence: .forSession)
+
+// ✅ Use .none for mTLS credentials
+URLCredential(identity: identity, certificates: nil, persistence: .none)
+
+// ❌ Trust all certificates or skip server trust evaluation
+SecTrustSetAnchorCertificatesOnly(serverTrust, false) // Allows system CAs
+
+// ✅ Pin to bundled CA certificate only
+SecTrustSetAnchorCertificates(serverTrust, [pinnedCA] as CFArray)
+SecTrustSetAnchorCertificatesOnly(serverTrust, true) // ONLY trust our CA
+
+// ❌ Use AVPlayerItem(url:) for HTTPS mTLS streams (no delegate support)
+let item = AVPlayerItem(url: httpsURL) // Won't authenticate
+
+// ✅ Use AVAssetResourceLoaderDelegate with custom scheme
+var components = URLComponents(string: song.streamURL)!
+components.scheme = "mtls-stream"
+let asset = AVURLAsset(url: components.url!)
+asset.resourceLoader.setDelegate(delegate, queue: .global())
+let item = AVPlayerItem(asset: asset)
+
+// ❌ Fetch entire file in AVAssetResourceLoaderDelegate (breaks streaming)
+let (data, _) = try await session.data(from: url)
+dataRequest.respond(with: data) // Waits for full download
+
+// ✅ Use byte-range requests for efficient streaming
+var request = URLRequest(url: url)
+let endOffset = dataRequest.requestedOffset + Int64(dataRequest.requestedLength) - 1
+request.setValue("bytes=\(dataRequest.requestedOffset)-\(endOffset)", forHTTPHeaderField: "Range")
+let (data, _) = try await session.data(for: request)
+dataRequest.respond(with: data)
 ```
 
 ## Testing
@@ -512,3 +626,4 @@ await Task.detached {
 - **UI**: SwiftUI inspector, verify `@State`/`@Observable` updates, main actor isolation
 - **Backend Sync**: Check `PlaylistService.shared.error` for sync failures, verify `isLoading` state, check backend API responses. `PlaylistListView` syncs metadata only; `PlaylistDetailView` syncs individual playlist songs on navigation.
 - **Downloads**: Check `DownloadService.shared.activeDownloads` for individual song progress, `playlistDownloadProgress` for aggregate playlist progress, `isDownloadingPlaylist(_:)` for playlist download state, `song.isDownloaded`/`song.localFileURL` for persisted local state, storage via `formattedStorageUsed()`, and `cleanupStalePaths(modelContext:)` if files were removed outside the app. Downloads persist in Documents directory across sessions. If songs show as not downloaded after sync, check that `PlaylistService` is reusing songs by `videoId`.
+- **Certificates/mTLS**: Check `CertificateService.shared.isClientCertificateConfigured` for import status, `certificateCommonName`/`certificateExpirationDate` for cert details, `isCertificateExpired`/`isCertificateExpiringSoon` for expiration warnings. For import failures, verify P12 password is correct and file is accessible. For connection failures with HTTPS, check `NetworkSessionDelegate` logs for trust evaluation errors. Ensure `ca.crt` is in app bundle. If streaming fails on HTTPS, verify `MTLSResourceLoaderDelegate` is receiving requests (check for `mtls-stream://` scheme conversion).

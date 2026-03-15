@@ -13,5 +13,41 @@
 	</dict>
 	<key>UIUserInterfaceStyle</key>
 	<string>Dark</string>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<false/>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>PKCS#12 Certificate</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.rsa.pkcs-12</string>
+			</array>
+		</dict>
+	</array>
+	<key>UTImportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.rsa.pkcs-12</string>
+			<key>UTTypeDescription</key>
+			<string>PKCS#12 Certificate</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>p12</string>
+					<string>pfx</string>
+				</array>
+			</dict>
+		</dict>
+	</array>
 </dict>
 </plist>

@@ -5,6 +5,7 @@
 
 import SwiftUI
 import SwiftData
+import UniformTypeIdentifiers
 import os
 
 private let logger = Logger(subsystem: "com.music-stream-app", category: "App")
@@ -37,9 +38,27 @@ struct music_stream_appApp: App {
             if let container = sharedModelContainer {
                 ContentView()
                     .modelContainer(container)
+                    .onOpenURL { url in
+                        handleOpenURL(url)
+                    }
             } else {
                 DataErrorView(error: modelContainerError)
             }
+        }
+    }
+    
+    private func handleOpenURL(_ url: URL) {
+        guard let typeIdentifier = try? url.resourceValues(forKeys: [.typeIdentifierKey]).typeIdentifier else {
+            return
+        }
+        
+        if UTType(typeIdentifier)?.conforms(to: UTType("com.rsa.pkcs-12")!) == true ||
+           url.pathExtension.lowercased() == "p12" ||
+           url.pathExtension.lowercased() == "pfx" {
+            Task { @MainActor in
+                CertificateService.shared.pendingImportURL = url
+            }
+            logger.info("Received .p12 file to import")
         }
     }
 }

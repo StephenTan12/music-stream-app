@@ -42,6 +42,7 @@ struct MainContentView: View {
                 NowPlayingView(audioPlayer: audioPlayer)
             }
             .task {
+                CertificateService.shared.performFirstLaunchCleanup()
                 downloadService.cleanupStalePaths(modelContext: modelContext)
                 await songService.refresh()
                 withAnimation {

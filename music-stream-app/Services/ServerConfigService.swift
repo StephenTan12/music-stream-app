@@ -38,6 +38,19 @@ final class ServerConfigService {
         "\(serverProtocol)://\(serverHost):\(serverPort)"
     }
     
+    var isCertificateRequired: Bool {
+        serverProtocol == "https"
+    }
+    
+    var isReadyToConnect: Bool {
+        let hasValidConfig = !serverHost.isEmpty && serverPort > 0 && serverPort <= 65535
+        
+        if isCertificateRequired {
+            return hasValidConfig && CertificateService.shared.isClientCertificateConfigured
+        }
+        return hasValidConfig
+    }
+    
     private init() {
         let defaults = UserDefaults.standard
         

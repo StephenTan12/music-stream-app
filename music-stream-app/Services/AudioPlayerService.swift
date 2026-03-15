@@ -112,6 +112,139 @@ struct PersistedPlaybackState: Codable {
     let currentPlaylistId: String?
 }
 
+// MARK: - mTLS Resource Loader Delegate
+
+final class MTLSResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate {
+    private let logger = Logger(subsystem: "com.music-stream-app", category: "MTLSResourceLoader")
+    private var pendingTasks: [AVAssetResourceLoadingRequest: Task<Void, Never>] = [:]
+    private let lock = NSLock()
+    
+    func resourceLoader(_ resourceLoader: AVAssetResourceLoader,
+                        shouldWaitForLoadingOfRequestedResource loadingRequest: AVAssetResourceLoadingRequest) -> Bool {
+        guard let url = loadingRequest.request.url else {
+            return false
+        }
+        
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return false
+        }
+        components.scheme = "https"
+        
+        guard let httpsURL = components.url else {
+            return false
+        }
+        
+        let task = Task { [weak self] in
+            guard let self = self else { return }
+            await self.handleLoadingRequest(loadingRequest, httpsURL: httpsURL)
+        }
+        
+        addPendingTask(task, for: loadingRequest)
+        
+        return true
+    }
+    
+    func resourceLoader(_ resourceLoader: AVAssetResourceLoader, didCancel loadingRequest: AVAssetResourceLoadingRequest) {
+        cancelAndRemoveTask(for: loadingRequest)
+    }
+    
+    // MARK: - Thread-safe task management (synchronous, not async)
+    
+    private func addPendingTask(_ task: Task<Void, Never>, for request: AVAssetResourceLoadingRequest) {
+        lock.withLock {
+            pendingTasks[request] = task
+        }
+    }
+    
+    private func removePendingTask(for request: AVAssetResourceLoadingRequest) {
+        lock.withLock {
+            _ = pendingTasks.removeValue(forKey: request)
+        }
+    }
+    
+    private func cancelAndRemoveTask(for request: AVAssetResourceLoadingRequest) {
+        lock.withLock {
+            if let task = pendingTasks.removeValue(forKey: request) {
+                task.cancel()
+            }
+        }
+    }
+    
+    private func handleLoadingRequest(_ loadingRequest: AVAssetResourceLoadingRequest, httpsURL: URL) async {
+        do {
+            if let contentInfoRequest = loadingRequest.contentInformationRequest {
+                try await fillContentInfo(contentInfoRequest, url: httpsURL, loadingRequest: loadingRequest)
+            }
+            
+            if let dataRequest = loadingRequest.dataRequest {
+                try await fulfillDataRequest(dataRequest, url: httpsURL, loadingRequest: loadingRequest)
+            }
+            
+            removePendingTask(for: loadingRequest)
+            loadingRequest.finishLoading()
+        } catch {
+            removePendingTask(for: loadingRequest)
+            if !Task.isCancelled {
+                logger.error("mTLS resource loading failed: \(error.localizedDescription)")
+                loadingRequest.finishLoading(with: error)
+            }
+        }
+    }
+    
+    private func fillContentInfo(_ contentInfoRequest: AVAssetResourceLoadingContentInformationRequest, 
+                                  url: URL, 
+                                  loadingRequest: AVAssetResourceLoadingRequest) async throws {
+        var request = URLRequest(url: url)
+        request.httpMethod = "HEAD"
+        
+        let (_, response) = try await AppConfig.API.urlSession.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse,
+              httpResponse.statusCode == 200 else {
+            throw NSError(domain: "MTLSResourceLoader", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to get content info"])
+        }
+        
+        if let contentType = httpResponse.value(forHTTPHeaderField: "Content-Type") {
+            contentInfoRequest.contentType = contentType
+        } else {
+            contentInfoRequest.contentType = "audio/mp4"
+        }
+        
+        if let contentLengthStr = httpResponse.value(forHTTPHeaderField: "Content-Length"),
+           let contentLength = Int64(contentLengthStr) {
+            contentInfoRequest.contentLength = contentLength
+        }
+        
+        let acceptRanges = httpResponse.value(forHTTPHeaderField: "Accept-Ranges")
+        contentInfoRequest.isByteRangeAccessSupported = (acceptRanges == "bytes")
+    }
+    
+    private func fulfillDataRequest(_ dataRequest: AVAssetResourceLoadingDataRequest,
+                                     url: URL,
+                                     loadingRequest: AVAssetResourceLoadingRequest) async throws {
+        let requestedOffset = dataRequest.requestedOffset
+        let requestedLength = dataRequest.requestedLength
+        
+        var request = URLRequest(url: url)
+        
+        if requestedLength > 0 {
+            let endOffset = requestedOffset + Int64(requestedLength) - 1
+            request.setValue("bytes=\(requestedOffset)-\(endOffset)", forHTTPHeaderField: "Range")
+        }
+        
+        let (data, response) = try await AppConfig.API.urlSession.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode) else {
+            throw NSError(domain: "MTLSResourceLoader", code: -2, userInfo: [NSLocalizedDescriptionKey: "Data request failed"])
+        }
+        
+        guard !Task.isCancelled else { return }
+        
+        dataRequest.respond(with: data)
+    }
+}
+
 @Observable
 @MainActor
 final class AudioPlayerService {
@@ -126,6 +259,7 @@ final class AudioPlayerService {
     private var artworkCache: [String: UIImage] = [:]
     private var artworkAccessOrder: [String] = []
     private let maxArtworkCacheSize = 20
+    private var resourceLoaderDelegate: MTLSResourceLoaderDelegate?
     
     private nonisolated static let playbackStateKey = "persistedPlaybackState"
     private var saveStateTask: Task<Void, Never>?
@@ -292,10 +426,8 @@ final class AudioPlayerService {
         isLoading = true
         isBuffering = true
         
-        let playbackURL: URL
-        
         if let localURL = song.localFileURL {
-            playbackURL = localURL
+            playerItem = AVPlayerItem(url: localURL)
             isBuffering = false
         } else {
             if !NetworkMonitor.shared.isConnected {
@@ -311,10 +443,31 @@ final class AudioPlayerService {
                 isBuffering = false
                 return
             }
-            playbackURL = url
+            
+            if ServerConfigService.shared.serverProtocol == "https" {
+                guard var components = URLComponents(string: song.streamURL) else {
+                    setError(.invalidURL)
+                    isLoading = false
+                    isBuffering = false
+                    return
+                }
+                components.scheme = "mtls-stream"
+                guard let mtlsURL = components.url else {
+                    setError(.invalidURL)
+                    isLoading = false
+                    isBuffering = false
+                    return
+                }
+                
+                let asset = AVURLAsset(url: mtlsURL)
+                resourceLoaderDelegate = MTLSResourceLoaderDelegate()
+                asset.resourceLoader.setDelegate(resourceLoaderDelegate, queue: DispatchQueue.global(qos: .userInitiated))
+                playerItem = AVPlayerItem(asset: asset)
+            } else {
+                playerItem = AVPlayerItem(url: url)
+            }
         }
         
-        playerItem = AVPlayerItem(url: playbackURL)
         player = AVPlayer(playerItem: playerItem)
         
         setupTimeObserver()
@@ -356,13 +509,13 @@ final class AudioPlayerService {
         }
         
         Task.detached { [weak self, artworkURLString] in
-            guard let self else { return }
+            guard let strongSelf = self else { return }
             do {
                 let (data, _) = try await AppConfig.API.urlSession.data(from: artworkURL)
                 if let image = UIImage(data: data) {
                     await MainActor.run {
-                        self.evictAndCacheArtwork(image, for: artworkURLString)
-                        self.updateNowPlayingArtwork(image)
+                        strongSelf.evictAndCacheArtwork(image, for: artworkURLString)
+                        strongSelf.updateNowPlayingArtwork(image)
                     }
                 }
             } catch {
@@ -709,10 +862,8 @@ final class AudioPlayerService {
         isLoading = true
         isBuffering = true
         
-        let playbackURL: URL
-        
         if let localURL = song.localFileURL {
-            playbackURL = localURL
+            playerItem = AVPlayerItem(url: localURL)
             isBuffering = false
         } else {
             if !NetworkMonitor.shared.isConnected {
@@ -728,10 +879,31 @@ final class AudioPlayerService {
                 isBuffering = false
                 return
             }
-            playbackURL = url
+            
+            if ServerConfigService.shared.serverProtocol == "https" {
+                guard var components = URLComponents(string: song.streamURL) else {
+                    setError(.invalidURL)
+                    isLoading = false
+                    isBuffering = false
+                    return
+                }
+                components.scheme = "mtls-stream"
+                guard let mtlsURL = components.url else {
+                    setError(.invalidURL)
+                    isLoading = false
+                    isBuffering = false
+                    return
+                }
+                
+                let asset = AVURLAsset(url: mtlsURL)
+                resourceLoaderDelegate = MTLSResourceLoaderDelegate()
+                asset.resourceLoader.setDelegate(resourceLoaderDelegate, queue: DispatchQueue.global(qos: .userInitiated))
+                playerItem = AVPlayerItem(asset: asset)
+            } else {
+                playerItem = AVPlayerItem(url: url)
+            }
         }
         
-        playerItem = AVPlayerItem(url: playbackURL)
         player = AVPlayer(playerItem: playerItem)
         
         setupTimeObserver()
@@ -779,6 +951,7 @@ final class AudioPlayerService {
         player?.pause()
         player = nil
         playerItem = nil
+        resourceLoaderDelegate = nil
         currentTime = 0
         duration = 0
         isLoading = false

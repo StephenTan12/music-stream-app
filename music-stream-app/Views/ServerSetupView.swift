@@ -9,12 +9,19 @@ struct ServerSetupView: View {
     @State private var selectedProtocol: String = "http"
     @State private var host: String = ""
     @State private var portString: String = "8000"
+    @State private var certificateService = CertificateService.shared
+    @State private var showCertificateImport = false
     
     private var isValid: Bool {
-        !host.trimmingCharacters(in: .whitespaces).isEmpty &&
-        Int(portString) != nil &&
-        (Int(portString) ?? 0) > 0 &&
-        (Int(portString) ?? 0) <= 65535
+        let basicValid = !host.trimmingCharacters(in: .whitespaces).isEmpty &&
+            Int(portString) != nil &&
+            (Int(portString) ?? 0) > 0 &&
+            (Int(portString) ?? 0) <= 65535
+        
+        if selectedProtocol == "https" {
+            return basicValid && certificateService.isClientCertificateConfigured
+        }
+        return basicValid
     }
     
     private var previewURL: String {
@@ -77,6 +84,27 @@ struct ServerSetupView: View {
                             .keyboardType(.numberPad)
                     }
                     
+                    if selectedProtocol == "https" {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("Client Certificate")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            
+                            CertificateStatusView()
+                            
+                            if !certificateService.isClientCertificateConfigured {
+                                Button {
+                                    showCertificateImport = true
+                                } label: {
+                                    Label("Import Certificate", systemImage: "plus.circle.fill")
+                                        .frame(maxWidth: .infinity)
+                                }
+                                .buttonStyle(.bordered)
+                            }
+                        }
+                        .padding(.top, 8)
+                    }
+                    
                     Text(previewURL)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -102,6 +130,20 @@ struct ServerSetupView: View {
         }
         .scrollDismissesKeyboard(.interactively)
         .background(Color(.systemBackground))
+        .sheet(isPresented: $showCertificateImport) {
+            NavigationStack {
+                CertificateImportView()
+                    .navigationTitle("Import Certificate")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Cancel") {
+                                showCertificateImport = false
+                            }
+                        }
+                    }
+            }
+        }
     }
     
     private func connect() {

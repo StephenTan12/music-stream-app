@@ -11,6 +11,8 @@ struct SettingsView: View {
     @State private var selectedProtocol: String
     @State private var host: String
     @State private var portString: String
+    @State private var certificateService = CertificateService.shared
+    @State private var showCertificateImport = false
     
     var onSave: (() -> Void)?
     
@@ -23,10 +25,15 @@ struct SettingsView: View {
     }
     
     private var isValid: Bool {
-        !host.trimmingCharacters(in: .whitespaces).isEmpty &&
-        Int(portString) != nil &&
-        (Int(portString) ?? 0) > 0 &&
-        (Int(portString) ?? 0) <= 65535
+        let basicValid = !host.trimmingCharacters(in: .whitespaces).isEmpty &&
+            Int(portString) != nil &&
+            (Int(portString) ?? 0) > 0 &&
+            (Int(portString) ?? 0) <= 65535
+        
+        if selectedProtocol == "https" {
+            return basicValid && certificateService.isClientCertificateConfigured
+        }
+        return basicValid
     }
     
     private var previewURL: String {
@@ -58,6 +65,24 @@ struct SettingsView: View {
                         .opacity(host.isEmpty ? 0 : 1)
                 }
                 
+                if selectedProtocol == "https" {
+                    Section {
+                        CertificateStatusView()
+                        
+                        if !certificateService.isClientCertificateConfigured {
+                            Button {
+                                showCertificateImport = true
+                            } label: {
+                                Label("Import Certificate", systemImage: "plus.circle.fill")
+                            }
+                        }
+                    } header: {
+                        Text("Client Certificate")
+                    } footer: {
+                        Text("Required for secure HTTPS connections")
+                    }
+                }
+                
                 Section {
                     Button("Save") {
                         saveSettings()
@@ -73,6 +98,20 @@ struct SettingsView: View {
                     Button("Cancel") {
                         dismiss()
                     }
+                }
+            }
+            .sheet(isPresented: $showCertificateImport) {
+                NavigationStack {
+                    CertificateImportView()
+                        .navigationTitle("Import Certificate")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button("Cancel") {
+                                    showCertificateImport = false
+                                }
+                            }
+                        }
                 }
             }
         }

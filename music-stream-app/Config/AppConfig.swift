@@ -12,11 +12,27 @@ enum AppConfig {
         }
         static let defaultPageSize = 50
         static let requestTimeoutSeconds: TimeInterval = 3.0
-        static let urlSession: URLSession = {
+        
+        static var urlSession: URLSession {
+            if ServerConfigService.shared.serverProtocol == "https" {
+                return authenticatedURLSession
+            } else {
+                return defaultURLSession
+            }
+        }
+        
+        private static let defaultURLSession: URLSession = {
             let configuration = URLSessionConfiguration.default
             configuration.timeoutIntervalForRequest = requestTimeoutSeconds
             configuration.timeoutIntervalForResource = requestTimeoutSeconds
             return URLSession(configuration: configuration)
+        }()
+        
+        private static let authenticatedURLSession: URLSession = {
+            let configuration = URLSessionConfiguration.default
+            configuration.timeoutIntervalForRequest = requestTimeoutSeconds
+            configuration.timeoutIntervalForResource = requestTimeoutSeconds
+            return URLSession(configuration: configuration, delegate: NetworkSessionDelegate.shared, delegateQueue: nil)
         }()
         
         enum Endpoints {
@@ -50,5 +66,10 @@ enum AppConfig {
     enum Downloads {
         static let directory = "Downloads"
         static let artworkDirectory = "Downloads/Artwork"
+    }
+    
+    enum Certificates {
+        static let pinnedCAResource = "ca"
+        static let pinnedCAExtension = "crt"
     }
 }
