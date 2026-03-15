@@ -179,6 +179,9 @@ struct PlaylistDetailView: View {
     }
     
     private var allSongsDownloaded: Bool {
+        // Reference downloadCompletionCounter to ensure SwiftUI re-evaluates this
+        // computed property when downloads complete
+        _ = downloadService.downloadCompletionCounter
         let songs = playlist.songs
         guard !songs.isEmpty else { return false }
         return songs.allSatisfy { $0.isDownloaded }

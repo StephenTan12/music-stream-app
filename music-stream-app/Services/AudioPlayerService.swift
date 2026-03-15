@@ -112,11 +112,163 @@ struct PersistedPlaybackState: Codable {
     let currentPlaylistId: String?
 }
 
+// MARK: - Streaming Data Delegate for mTLS
+
+private final class StreamingDataDelegate: NSObject, URLSessionDelegate, URLSessionTaskDelegate, URLSessionDataDelegate, @unchecked Sendable {
+    private let dataRequest: AVAssetResourceLoadingDataRequest
+    private let loadingRequest: AVAssetResourceLoadingRequest
+    private let continuation: CheckedContinuation<Void, Error>
+    private let logger = Logger(subsystem: "com.music-stream-app", category: "StreamingData")
+    private var totalBytesReceived = 0
+    private var isFirstChunk = true
+    private var isCancelled = false
+    private var isCompleted = false
+    private let lock = NSLock()
+    
+    init(dataRequest: AVAssetResourceLoadingDataRequest, 
+         loadingRequest: AVAssetResourceLoadingRequest,
+         continuation: CheckedContinuation<Void, Error>) {
+        self.dataRequest = dataRequest
+        self.loadingRequest = loadingRequest
+        self.continuation = continuation
+        super.init()
+    }
+    
+    func cancel() {
+        lock.withLock { isCancelled = true }
+    }
+    
+    // MARK: - URLSessionDelegate (session-level auth challenges)
+    
+    func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge, completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        handleChallenge(challenge, completionHandler: completionHandler)
+    }
+    
+    // MARK: - URLSessionTaskDelegate (task-level auth challenges)
+    
+    func urlSession(_ session: URLSession, task: URLSessionTask, didReceive challenge: URLAuthenticationChallenge, completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        handleChallenge(challenge, completionHandler: completionHandler)
+    }
+    
+    private func handleChallenge(_ challenge: URLAuthenticationChallenge, completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        let authMethod = challenge.protectionSpace.authenticationMethod
+        
+        switch authMethod {
+        case NSURLAuthenticationMethodServerTrust:
+            handleServerTrustChallenge(challenge, completionHandler: completionHandler)
+        case NSURLAuthenticationMethodClientCertificate:
+            handleClientCertificateChallenge(challenge, completionHandler: completionHandler)
+        default:
+            completionHandler(.performDefaultHandling, nil)
+        }
+    }
+    
+    private func handleServerTrustChallenge(_ challenge: URLAuthenticationChallenge, completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        guard let serverTrust = challenge.protectionSpace.serverTrust else {
+            completionHandler(.cancelAuthenticationChallenge, nil)
+            return
+        }
+        
+        guard let pinnedCA = CertificateService.loadPinnedCACertificateSync() else {
+            logger.error("Failed to load pinned CA certificate for streaming")
+            completionHandler(.cancelAuthenticationChallenge, nil)
+            return
+        }
+        
+        let anchorCertificates = [pinnedCA] as CFArray
+        guard SecTrustSetAnchorCertificates(serverTrust, anchorCertificates) == errSecSuccess,
+              SecTrustSetAnchorCertificatesOnly(serverTrust, true) == errSecSuccess else {
+            completionHandler(.cancelAuthenticationChallenge, nil)
+            return
+        }
+        
+        var error: CFError?
+        if SecTrustEvaluateWithError(serverTrust, &error) {
+            completionHandler(.useCredential, URLCredential(trust: serverTrust))
+        } else {
+            logger.error("Server trust evaluation failed for streaming")
+            completionHandler(.cancelAuthenticationChallenge, nil)
+        }
+    }
+    
+    private func handleClientCertificateChallenge(_ challenge: URLAuthenticationChallenge, completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        guard let credential = CertificateService.clientCredentialSync else {
+            logger.error("Client credential not available for streaming")
+            completionHandler(.cancelAuthenticationChallenge, nil)
+            return
+        }
+        completionHandler(.useCredential, credential)
+    }
+    
+    // MARK: - URLSessionDataDelegate
+    
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode) else {
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+            logger.error("Stream request failed with status: \(statusCode)")
+            completionHandler(.cancel)
+            resumeWithError(NSError(domain: "MTLSResourceLoader", code: -2, 
+                userInfo: [NSLocalizedDescriptionKey: "Data request failed with status \(statusCode)"]))
+            return
+        }
+        completionHandler(.allow)
+    }
+    
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        let cancelled = lock.withLock { isCancelled }
+        guard !cancelled else { return }
+        
+        // Deliver data immediately to AVPlayer as it arrives from the network
+        dataRequest.respond(with: data)
+        totalBytesReceived += data.count
+        
+        if isFirstChunk {
+            logger.debug("First chunk delivered: \(data.count) bytes")
+            isFirstChunk = false
+        }
+    }
+    
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error = error {
+            resumeWithError(error)
+        } else {
+            logger.debug("Streamed \(self.totalBytesReceived) bytes total to AVPlayer")
+            resumeWithSuccess()
+        }
+    }
+    
+    private func resumeWithError(_ error: Error) {
+        lock.lock()
+        let cancelled = isCancelled
+        let completed = isCompleted
+        if !completed { isCompleted = true }
+        lock.unlock()
+        
+        if !cancelled && !completed {
+            logger.error("Stream failed: \(error.localizedDescription)")
+            continuation.resume(throwing: error)
+        }
+    }
+    
+    private func resumeWithSuccess() {
+        lock.lock()
+        let completed = isCompleted
+        if !completed { isCompleted = true }
+        lock.unlock()
+        
+        if !completed {
+            continuation.resume()
+        }
+    }
+}
+
 // MARK: - mTLS Resource Loader Delegate
 
 final class MTLSResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate {
     private let logger = Logger(subsystem: "com.music-stream-app", category: "MTLSResourceLoader")
     private var pendingTasks: [AVAssetResourceLoadingRequest: Task<Void, Never>] = [:]
+    private var pendingDataDelegates: [AVAssetResourceLoadingRequest: (URLSessionDataTask, StreamingDataDelegate)] = [:]
     private let lock = NSLock()
     
     func resourceLoader(_ resourceLoader: AVAssetResourceLoader,
@@ -159,6 +311,7 @@ final class MTLSResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate 
     private func removePendingTask(for request: AVAssetResourceLoadingRequest) {
         lock.withLock {
             _ = pendingTasks.removeValue(forKey: request)
+            _ = pendingDataDelegates.removeValue(forKey: request)
         }
     }
     
@@ -166,6 +319,10 @@ final class MTLSResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate 
         lock.withLock {
             if let task = pendingTasks.removeValue(forKey: request) {
                 task.cancel()
+            }
+            if let (dataTask, delegate) = pendingDataDelegates.removeValue(forKey: request) {
+                delegate.cancel()
+                dataTask.cancel()
             }
         }
     }
@@ -195,28 +352,65 @@ final class MTLSResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate 
                                   url: URL, 
                                   loadingRequest: AVAssetResourceLoadingRequest) async throws {
         var request = URLRequest(url: url)
-        request.httpMethod = "HEAD"
+        request.setValue("bytes=0-0", forHTTPHeaderField: "Range")
         
         let (_, response) = try await AppConfig.API.urlSession.data(for: request)
         
         guard let httpResponse = response as? HTTPURLResponse,
-              httpResponse.statusCode == 200 else {
+              (200...299).contains(httpResponse.statusCode) else {
             throw NSError(domain: "MTLSResourceLoader", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to get content info"])
         }
         
-        if let contentType = httpResponse.value(forHTTPHeaderField: "Content-Type") {
-            contentInfoRequest.contentType = contentType
-        } else {
-            contentInfoRequest.contentType = "audio/mp4"
-        }
+        let mimeType = httpResponse.value(forHTTPHeaderField: "Content-Type")
+        let uti = mimeType.map { utiFromMimeType($0) } ?? "public.mpeg-4-audio"
+        contentInfoRequest.contentType = uti
+        logger.debug("Content-Type: \(mimeType ?? "nil") → UTI: \(uti)")
         
-        if let contentLengthStr = httpResponse.value(forHTTPHeaderField: "Content-Length"),
-           let contentLength = Int64(contentLengthStr) {
-            contentInfoRequest.contentLength = contentLength
-        }
-        
+        let contentRangeStr = httpResponse.value(forHTTPHeaderField: "Content-Range")
+        let contentLengthStr = httpResponse.value(forHTTPHeaderField: "Content-Length")
         let acceptRanges = httpResponse.value(forHTTPHeaderField: "Accept-Ranges")
-        contentInfoRequest.isByteRangeAccessSupported = (acceptRanges == "bytes")
+        
+        logger.debug("Content-Range: \(contentRangeStr ?? "nil"), Content-Length: \(contentLengthStr ?? "nil"), Accept-Ranges: \(acceptRanges ?? "nil")")
+        
+        if let contentRangeStr, let totalLength = parseContentRangeTotalLength(contentRangeStr) {
+            contentInfoRequest.contentLength = totalLength
+            logger.debug("Set contentLength from Content-Range: \(totalLength)")
+        } else if let contentLengthStr, let contentLength = Int64(contentLengthStr) {
+            contentInfoRequest.contentLength = contentLength
+            logger.debug("Set contentLength from Content-Length: \(contentLength)")
+        } else {
+            logger.warning("Could not determine content length")
+        }
+        
+        let hasContentRange = contentRangeStr != nil
+        contentInfoRequest.isByteRangeAccessSupported = (acceptRanges == "bytes" || hasContentRange)
+        logger.debug("Byte range supported: \(contentInfoRequest.isByteRangeAccessSupported)")
+    }
+    
+    private func parseContentRangeTotalLength(_ contentRange: String) -> Int64? {
+        let parts = contentRange.split(separator: "/")
+        guard parts.count == 2, let totalStr = parts.last, totalStr != "*" else {
+            return nil
+        }
+        return Int64(totalStr)
+    }
+    
+    private func utiFromMimeType(_ mimeType: String) -> String {
+        let cleanMime = mimeType.components(separatedBy: ";").first?.trimmingCharacters(in: .whitespaces).lowercased() ?? mimeType.lowercased()
+        switch cleanMime {
+        case "audio/mp4", "audio/x-m4a", "audio/m4a":
+            return "public.mpeg-4-audio"
+        case "audio/mpeg", "audio/mp3":
+            return "public.mp3"
+        case "audio/aac":
+            return "public.aac-audio"
+        case "audio/wav", "audio/x-wav":
+            return "com.microsoft.waveform-audio"
+        case "audio/flac":
+            return "org.xiph.flac"
+        default:
+            return "public.mpeg-4-audio"
+        }
     }
     
     private func fulfillDataRequest(_ dataRequest: AVAssetResourceLoadingDataRequest,
@@ -225,6 +419,8 @@ final class MTLSResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate 
         let requestedOffset = dataRequest.requestedOffset
         let requestedLength = dataRequest.requestedLength
         
+        logger.debug("Data request: offset=\(requestedOffset), length=\(requestedLength)")
+        
         var request = URLRequest(url: url)
         
         if requestedLength > 0 {
@@ -232,16 +428,27 @@ final class MTLSResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate 
             request.setValue("bytes=\(requestedOffset)-\(endOffset)", forHTTPHeaderField: "Range")
         }
         
-        let (data, response) = try await AppConfig.API.urlSession.data(for: request)
-        
-        guard let httpResponse = response as? HTTPURLResponse,
-              (200...299).contains(httpResponse.statusCode) else {
-            throw NSError(domain: "MTLSResourceLoader", code: -2, userInfo: [NSLocalizedDescriptionKey: "Data request failed"])
+        // Use delegate-based streaming for efficient chunk delivery
+        // Data is delivered to AVPlayer immediately as it arrives from the network
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let delegate = StreamingDataDelegate(
+                dataRequest: dataRequest,
+                loadingRequest: loadingRequest,
+                continuation: continuation
+            )
+            
+            // Create a dedicated session with this delegate for streaming
+            let config = AppConfig.API.urlSessionConfiguration
+            let session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+            let dataTask = session.dataTask(with: request)
+            
+            // Track for cancellation
+            lock.withLock {
+                pendingDataDelegates[loadingRequest] = (dataTask, delegate)
+            }
+            
+            dataTask.resume()
         }
-        
-        guard !Task.isCancelled else { return }
-        
-        dataRequest.respond(with: data)
     }
 }
 
@@ -552,7 +759,7 @@ final class AudioPlayerService {
         timeObserver = player?.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
             guard let self else { return }
             let seconds = time.seconds
-            Task { @MainActor in
+            MainActor.assumeIsolated {
                 self.currentTime = seconds
                 if let duration = self.player?.currentItem?.duration.seconds, duration.isFinite {
                     self.duration = duration
@@ -601,6 +808,7 @@ final class AudioPlayerService {
                 guard let self = self else { return }
                 switch status {
                 case .readyToPlay:
+                    logger.debug("Player status: readyToPlay, duration: \(self.playerItem?.duration.seconds ?? -1)")
                     self.isBuffering = false
                     self.isLoading = false
                     if let duration = self.playerItem?.duration.seconds, duration.isFinite {
@@ -610,6 +818,7 @@ final class AudioPlayerService {
                     self.isLoading = false
                     self.isBuffering = false
                     let errorMessage = self.playerItem?.error?.localizedDescription ?? "Unknown error"
+                    logger.error("Player status: failed - \(errorMessage)")
                     self.setError(.playbackFailed(errorMessage))
                 default:
                     break
@@ -639,9 +848,11 @@ final class AudioPlayerService {
     }
     
     func play() {
+        logger.debug("play() called, player exists: \(self.player != nil), rate: \(self.player?.rate ?? -1)")
         player?.play()
         isPlaying = true
         updateNowPlayingInfo()
+        logger.debug("After play(), rate: \(self.player?.rate ?? -1)")
     }
     
     func pause() {

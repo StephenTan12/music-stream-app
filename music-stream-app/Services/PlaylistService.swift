@@ -6,6 +6,9 @@
 import Foundation
 import SwiftData
 import Observation
+import os
+
+private let timeoutErrorCode = -1001
 
 struct PlaylistDTO: Codable {
     let id: Int
@@ -55,6 +58,8 @@ enum PlaylistServiceError: LocalizedError {
 final class PlaylistService {
     static let shared = PlaylistService()
     
+    private let logger = Logger(subsystem: "com.music-stream-app", category: "PlaylistService")
+    
     var playlists: [PlaylistDTO] = []
     var isLoading = false
     var error: PlaylistServiceError?
@@ -73,7 +78,7 @@ final class PlaylistService {
         }
         
         do {
-            let (data, response) = try await AppConfig.API.urlSession.data(from: url)
+            let (data, response) = try await performRequestWithRetry(url: url)
             
             guard let httpResponse = response as? HTTPURLResponse,
                   (200...299).contains(httpResponse.statusCode) else {
@@ -111,7 +116,7 @@ final class PlaylistService {
         }
         
         do {
-            let (data, response) = try await AppConfig.API.urlSession.data(from: url)
+            let (data, response) = try await performRequestWithRetry(url: url)
             
             guard let httpResponse = response as? HTTPURLResponse,
                   (200...299).contains(httpResponse.statusCode) else {
@@ -418,6 +423,16 @@ final class PlaylistService {
             if !hasDownload && !isInPlaylist {
                 modelContext.delete(song)
             }
+        }
+    }
+    
+    private func performRequestWithRetry(url: URL) async throws -> (Data, URLResponse) {
+        do {
+            return try await AppConfig.API.urlSession.data(from: url)
+        } catch let nsError as NSError where nsError.code == timeoutErrorCode {
+            logger.warning("Request timed out, invalidating session and retrying: \(url.absoluteString)")
+            AppConfig.API.invalidateAuthenticatedSession()
+            return try await AppConfig.API.urlSession.data(from: url)
         }
     }
 }

@@ -80,10 +80,12 @@ struct CertificateStatusView: View {
         .alert("Remove Certificate?", isPresented: $showRemoveConfirmation) {
             Button("Cancel", role: .cancel) {}
             Button("Remove", role: .destructive) {
-                certificateService.removeAllCertificateData()
+                if let id = certificateService.selectedIdentityId {
+                    certificateService.removeIdentity(id: id)
+                }
             }
         } message: {
-            Text("You will need to import a new certificate to connect to HTTPS servers.")
+            Text("This will remove the currently selected certificate.")
         }
     }
 }

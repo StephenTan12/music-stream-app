@@ -20,25 +20,27 @@ struct SettingsView: View {
         let config = ServerConfigService.shared
         _selectedProtocol = State(initialValue: config.serverProtocol)
         _host = State(initialValue: config.serverHost)
-        _portString = State(initialValue: String(config.serverPort))
+        _portString = State(initialValue: config.serverPort.map { String($0) } ?? "")
         self.onSave = onSave
     }
     
     private var isValid: Bool {
-        let basicValid = !host.trimmingCharacters(in: .whitespaces).isEmpty &&
-            Int(portString) != nil &&
-            (Int(portString) ?? 0) > 0 &&
-            (Int(portString) ?? 0) <= 65535
+        let trimmedPort = portString.trimmingCharacters(in: .whitespaces)
+        let hasValidHost = !host.trimmingCharacters(in: .whitespaces).isEmpty
+        let hasValidPort = trimmedPort.isEmpty || (Int(trimmedPort).map { $0 > 0 && $0 <= 65535 } ?? false)
         
         if selectedProtocol == "https" {
-            return basicValid && certificateService.isClientCertificateConfigured
+            return hasValidHost && hasValidPort && certificateService.isClientCertificateConfigured
         }
-        return basicValid
+        return hasValidHost && hasValidPort
     }
     
     private var previewURL: String {
-        let port = Int(portString) ?? 8000
-        return "\(selectedProtocol)://\(host):\(port)"
+        let trimmedPort = portString.trimmingCharacters(in: .whitespaces)
+        if trimmedPort.isEmpty {
+            return "\(selectedProtocol)://\(host)"
+        }
+        return "\(selectedProtocol)://\(host):\(trimmedPort)"
     }
     
     var body: some View {
@@ -55,7 +57,7 @@ struct SettingsView: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                     
-                    TextField("Port", text: $portString)
+                    TextField("Port (optional)", text: $portString)
                         .keyboardType(.numberPad)
                 } header: {
                     Text("Server Configuration")
@@ -69,12 +71,13 @@ struct SettingsView: View {
                     Section {
                         CertificateStatusView()
                         
-                        if !certificateService.isClientCertificateConfigured {
-                            Button {
-                                showCertificateImport = true
-                            } label: {
-                                Label("Import Certificate", systemImage: "plus.circle.fill")
-                            }
+                        Button {
+                            showCertificateImport = true
+                        } label: {
+                            Label(
+                                certificateService.isClientCertificateConfigured ? "Change Certificate" : "Add Certificate",
+                                systemImage: "plus.circle.fill"
+                            )
                         }
                     } header: {
                         Text("Client Certificate")
@@ -100,19 +103,16 @@ struct SettingsView: View {
                     }
                 }
             }
-            .sheet(isPresented: $showCertificateImport) {
-                NavigationStack {
-                    CertificateImportView()
-                        .navigationTitle("Import Certificate")
-                        .navigationBarTitleDisplayMode(.inline)
-                        .toolbar {
-                            ToolbarItem(placement: .cancellationAction) {
-                                Button("Cancel") {
-                                    showCertificateImport = false
-                                }
-                            }
-                        }
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") {
+                        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                    }
                 }
+            }
+            .sheet(isPresented: $showCertificateImport) {
+                CertificateSelectionView()
             }
         }
     }
@@ -121,7 +121,8 @@ struct SettingsView: View {
         let config = ServerConfigService.shared
         config.serverProtocol = selectedProtocol
         config.serverHost = host.trimmingCharacters(in: .whitespaces)
-        config.serverPort = Int(portString) ?? 8000
+        let trimmedPort = portString.trimmingCharacters(in: .whitespaces)
+        config.serverPort = trimmedPort.isEmpty ? nil : Int(trimmedPort)
         onSave?()
         dismiss()
     }

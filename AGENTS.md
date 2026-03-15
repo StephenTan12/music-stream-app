@@ -18,7 +18,7 @@ music-stream-app/
 │   └── PlaylistSong.swift         # SwiftData: join model with order field for song ordering
 ├── Services/
 │   ├── AudioPlayerService.swift   # AVPlayer, queue, lock screen, session persistence, offline playback, mTLS streaming
-│   ├── CertificateService.swift   # mTLS client certificates, Keychain storage, P12 import, CA pinning
+│   ├── CertificateService.swift   # mTLS client certificates, multi-identity storage, P12 import, CA pinning
 │   ├── DownloadService.swift      # Offline downloads, progress tracking, storage management
 │   ├── NetworkMonitor.swift       # NWPathMonitor connectivity + server reachability
 │   ├── NetworkSessionDelegate.swift # URLSession delegate for mTLS auth challenges
@@ -35,7 +35,8 @@ music-stream-app/
 │   ├── EditPlaylistView.swift     # Playlist editing
 │   ├── SettingsView.swift         # Server configuration sheet (protocol, host, port, certificate)
 │   ├── ServerSetupView.swift      # First-launch server setup screen with certificate import for HTTPS
-│   ├── CertificateImportView.swift # P12 file import with password entry
+│   ├── CertificateImportView.swift   # P12 file import with password entry
+│   ├── CertificateSelectionView.swift # Select from saved certificates or import new
 │   └── Components/
 │       ├── MiniPlayerView.swift          # Bottom player bar
 │       ├── SongRowView.swift             # Song list row with context menu (download via long press)
@@ -43,7 +44,6 @@ music-stream-app/
 │       ├── CachedAsyncImage.swift        # LRU image cache
 │       ├── CertificateStatusView.swift   # Certificate status display with expiration warnings
 │       └── GradientPlaceholderView.swift # Missing artwork placeholder
-├── ca.crt                         # Bundled CA certificate for server trust pinning
 └── Assets.xcassets/               # App assets, launch screen color
 ```
 
@@ -202,20 +202,26 @@ The app supports mutual TLS (mTLS) for secure server connections:
 1. **Certificate Import Flow**:
    - User selects HTTPS protocol in `ServerSetupView` or `SettingsView`
    - Certificate section appears with `CertificateStatusView`
-   - User taps "Import Certificate" to open `CertificateImportView`
+   - User taps "Add Certificate" or "Change Certificate" to open `CertificateSelectionView`
+   - User can select from saved certificates or import a new one via `CertificateImportView`
    - User selects .p12 file and enters password
    - `CertificateService.importP12()` extracts identity and stores in Keychain
 
-2. **Keychain Storage** (secure, no file persistence):
-   - `SecIdentity` stored with `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`
-   - P12 file data zeroed from memory after import (password NOT stored - only needed for extraction)
-   - First-launch cleanup removes orphaned Keychain items from previous installs
+2. **Keychain Storage** (secure, multi-identity):
+   - Multiple `SecIdentity` items stored with unique labels (`mTLS-client-<UUID>`)
+   - Each identity stored with `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`
+   - Identity metadata (`StoredIdentity`: id, commonName, expirationDate) persisted in UserDefaults
+   - Selected identity ID tracked in UserDefaults; auto-selects next on deletion
+   - P12 file data zeroed from memory after import (password NOT stored)
+   - First-launch cleanup removes orphaned Keychain items; legacy single-identity migrated automatically
    - Static caching via `nonisolated(unsafe)` properties to avoid repeated Keychain lookups
 
 3. **Network Session Authentication**:
    - `AppConfig.API.urlSession` returns `authenticatedURLSession` for HTTPS
+   - Authenticated session is cached and automatically invalidated when server config changes
+   - Services use `performRequestWithRetry()` to invalidate and retry on timeout errors
    - `NetworkSessionDelegate` handles two challenge types:
-     - Server trust: CA pinning via bundled `ca.crt`
+     - Server trust: CA pinning via embedded PEM certificate in `CertificateService`
      - Client certificate: Provides `SecIdentity` from Keychain
 
 4. **AVPlayer mTLS Streaming**:
@@ -224,21 +230,31 @@ The app supports mutual TLS (mTLS) for secure server connections:
    - Converts to `https://` and routes through authenticated `URLSession`
    - Supports byte-range requests via HTTP `Range` headers for efficient streaming
    - Implements `didCancel` to cancel in-flight requests on seek/skip
+   - **Content Info Request**: Initial `Range: bytes=0-0` request fetches headers only (1 byte); `fillContentInfo` extracts `Content-Range` for total length, `Accept-Ranges` for byte-range support
+   - **UTI Conversion**: `AVAssetResourceLoadingContentInformationRequest.contentType` requires UTI (e.g., `public.mpeg-4-audio`), not MIME type; `utiFromMimeType(_:)` helper converts `audio/mp4` → `public.mpeg-4-audio`, `audio/mpeg` → `public.mp3`, etc.
+   - **Debug Logging**: Extensive `os.Logger` output for content info, data requests, player status changes, and `play()` invocations
 
 5. **External P12 File Opening**:
    - App registered as .p12 file handler via Info.plist
    - `onOpenURL` in app entry point sets `CertificateService.pendingImportURL`
-   - `CertificateImportView` checks for pending URL on appear
+   - `CertificateSelectionView` offers: select from saved identities or import new (P12)
+   - `CertificateImportView` checks for pending URL on appear and pre-fills the file selection
+   - `pendingImportURL` is cleared only after successful import (preserved on cancel for retry)
 
 6. **Certificate Status UI**:
    - `CertificateStatusView` shows: installed (green), expiring soon (orange), expired (red), or missing (orange)
-   - Displays common name and expiration date
-   - Remove button clears Keychain data
+   - Displays common name and expiration date of selected certificate
+   - Remove button removes only the selected certificate (auto-selects next if available)
+   - `CertificateSelectionView` lists all saved certificates with swipe-to-delete
    - Status row has VoiceOver accessibility support
 
 **Import Certificate**: Use `CertificateService.shared.importP12(from: url, password: password)` with async/await. The URL should be from `fileImporter` with security-scoped access.
 
-**Check Certificate Status**: Use `CertificateService.shared.isClientCertificateConfigured` to verify a certificate is available. Certificate and CA lookups are cached to avoid repeated Keychain/file access.
+**Select Certificate**: Use `CertificateService.shared.selectIdentity(id: uuid)` to switch to a saved certificate. Use `CertificateService.shared.storedIdentities` for the list, `selectedIdentityId` for the active one.
+
+**Remove Certificate**: Use `CertificateService.shared.removeIdentity(id: uuid)` for a single identity, or `removeAllCertificateData()` for all.
+
+**Check Certificate Status**: Use `CertificateService.shared.isClientCertificateConfigured` to verify a certificate is available. Certificate and CA lookups are cached to avoid repeated Keychain access.
 
 **Certificate for URLSession**: `NetworkSessionDelegate.shared` automatically uses static `nonisolated` methods on `CertificateService` (`clientCredentialSync`, `loadPinnedCACertificateSync`) for authentication challenges - these do not access the `shared` instance to avoid actor isolation issues.
 
@@ -260,6 +276,16 @@ Task.detached { AudioPlayerService.shared.play() }
 
 // ✅ Main actor
 Task { @MainActor in AudioPlayerService.shared.play() }
+
+// ❌ Create Task for main queue callback when already on main actor
+player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { time in
+    Task { @MainActor in self.updateTime(time) } // Unnecessary Task overhead
+}
+
+// ✅ Use MainActor.assumeIsolated for main queue callbacks
+player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { time in
+    MainActor.assumeIsolated { self.updateTime(time) } // No Task allocation
+}
 
 // ❌ New instance
 let player = AudioPlayerService()
@@ -374,6 +400,21 @@ ScrollView {
     }
 }
 .scrollDismissesKeyboard(.interactively)
+
+// ❌ Add keyboard toolbar to individual TextFields (causes conflicts)
+TextField("Port", text: $port)
+    .toolbar {
+        ToolbarItemGroup(placement: .keyboard) { Button("Done") { ... } }
+    }
+
+// ✅ Add keyboard toolbar at view level (applies to all fields consistently)
+Form {
+    TextField("Host", text: $host)
+    TextField("Port", text: $port)
+}
+.toolbar {
+    ToolbarItemGroup(placement: .keyboard) { Button("Done") { ... } }
+}
 
 // ❌ Store full stream URL (becomes stale when server config changes)
 var streamURL: String // Stored property with full URL
@@ -608,6 +649,20 @@ let endOffset = dataRequest.requestedOffset + Int64(dataRequest.requestedLength)
 request.setValue("bytes=\(dataRequest.requestedOffset)-\(endOffset)", forHTTPHeaderField: "Range")
 let (data, _) = try await session.data(for: request)
 dataRequest.respond(with: data)
+
+// ❌ Use MIME type directly for AVAssetResourceLoadingContentInformationRequest.contentType
+contentInfoRequest.contentType = httpResponse.value(forHTTPHeaderField: "Content-Type") // "audio/mp4"
+
+// ✅ Convert MIME type to UTI (AVPlayer expects UTI, not MIME)
+func utiFromMimeType(_ mimeType: String) -> String {
+    switch mimeType.lowercased() {
+    case "audio/mp4", "audio/x-m4a", "audio/m4a": return "public.mpeg-4-audio"
+    case "audio/mpeg", "audio/mp3": return "public.mp3"
+    case "audio/aac": return "public.aac-audio"
+    default: return "public.mpeg-4-audio"
+    }
+}
+contentInfoRequest.contentType = utiFromMimeType(mimeType)
 ```
 
 ## Testing
@@ -626,4 +681,15 @@ dataRequest.respond(with: data)
 - **UI**: SwiftUI inspector, verify `@State`/`@Observable` updates, main actor isolation
 - **Backend Sync**: Check `PlaylistService.shared.error` for sync failures, verify `isLoading` state, check backend API responses. `PlaylistListView` syncs metadata only; `PlaylistDetailView` syncs individual playlist songs on navigation.
 - **Downloads**: Check `DownloadService.shared.activeDownloads` for individual song progress, `playlistDownloadProgress` for aggregate playlist progress, `isDownloadingPlaylist(_:)` for playlist download state, `song.isDownloaded`/`song.localFileURL` for persisted local state, storage via `formattedStorageUsed()`, and `cleanupStalePaths(modelContext:)` if files were removed outside the app. Downloads persist in Documents directory across sessions. If songs show as not downloaded after sync, check that `PlaylistService` is reusing songs by `videoId`.
-- **Certificates/mTLS**: Check `CertificateService.shared.isClientCertificateConfigured` for import status, `certificateCommonName`/`certificateExpirationDate` for cert details, `isCertificateExpired`/`isCertificateExpiringSoon` for expiration warnings. For import failures, verify P12 password is correct and file is accessible. For connection failures with HTTPS, check `NetworkSessionDelegate` logs for trust evaluation errors. Ensure `ca.crt` is in app bundle. If streaming fails on HTTPS, verify `MTLSResourceLoaderDelegate` is receiving requests (check for `mtls-stream://` scheme conversion).
+- **Certificates/mTLS**: Check `CertificateService.shared.isClientCertificateConfigured` for import status, `storedIdentities` for all saved certificates, `selectedIdentityId` for active selection, `certificateCommonName`/`certificateExpirationDate` for selected cert details, `isCertificateExpired`/`isCertificateExpiringSoon` for expiration warnings. For import failures, verify P12 password is correct and file is accessible. For connection failures with HTTPS, check `NetworkSessionDelegate` logs for trust evaluation errors. CA certificate is embedded in `CertificateService.embeddedCACertificatePEM`. If streaming fails on HTTPS, verify `MTLSResourceLoaderDelegate` is receiving requests (check for `mtls-stream://` scheme conversion).
+- **Streaming**: Debug logs show the full streaming flow:
+  1. `Content-Type: audio/mp4 → UTI: public.mpeg-4-audio` - MIME to UTI conversion
+  2. `Content-Range: bytes 0-0/TOTAL, Content-Length: 1` - Initial probe request
+  3. `Set contentLength from Content-Range: TOTAL` - Total file size extracted
+  4. `Byte range supported: true` - Server supports partial content
+  5. `Data request: offset=X, length=Y` - AVPlayer requesting data chunk
+  6. `Received N bytes, responding to AVPlayer` - Data delivered to player
+  7. `Player status: readyToPlay, duration: X.X` - AVPlayer ready
+  8. `play() called, player exists: true, rate: 0.0` → `After play(), rate: 1.0` - Playback started
+  
+  If rate stays `0.0` after `play()`, AVPlayer is refusing to play (check for codec issues, corrupted data, or missing audio track). Check nginx logs for `206 Partial Content` responses and backend logs for streaming requests.

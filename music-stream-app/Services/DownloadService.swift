@@ -54,6 +54,9 @@ final class DownloadService {
     var activeDownloads: [String: Double] = [:]
     var totalStorageUsed: Int64 = 0
     
+    /// Increments when any download completes, used to trigger view refresh
+    private(set) var downloadCompletionCounter: Int = 0
+    
     private(set) var currentPlaylistDownloadId: UUID?
     private(set) var playlistDownloadProgress: Double = 0
     private var playlistTotalSongs: Int = 0
@@ -129,6 +132,7 @@ final class DownloadService {
                     song.downloadProgress = nil
                     activeDownloads.removeValue(forKey: videoId)
                     downloadTasks.removeValue(forKey: videoId)
+                    downloadCompletionCounter += 1
                 }
                 scheduleStorageRefresh()
                 
@@ -257,6 +261,7 @@ final class DownloadService {
             playlistTotalSongs = 0
             playlistCompletedSongs = 0
             playlistCurrentSongProgress = 0
+            downloadCompletionCounter += 1
         }
         
         for song in songs {

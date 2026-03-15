@@ -8,10 +8,13 @@ import UniformTypeIdentifiers
 
 struct CertificateImportView: View {
     @Environment(\.dismiss) private var dismiss
+    var onImportComplete: (() -> Void)?
+    
     @State private var showFilePicker = false
     @State private var selectedFileURL: URL?
     @State private var selectedFileName: String?
     @State private var password = ""
+    @State private var showPassword = false
     @State private var isImporting = false
     @State private var errorMessage: String?
     
@@ -74,10 +77,27 @@ struct CertificateImportView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         
-                        SecureField("Enter password", text: $password)
-                            .textFieldStyle(.roundedBorder)
-                            .textContentType(.password)
-                            .accessibilityLabel("Certificate password")
+                        HStack {
+                            if showPassword {
+                                TextField("Enter password", text: $password)
+                                    .textFieldStyle(.roundedBorder)
+                                    .textContentType(.password)
+                                    .autocorrectionDisabled()
+                                    .textInputAutocapitalization(.never)
+                            } else {
+                                SecureField("Enter password", text: $password)
+                                    .textFieldStyle(.roundedBorder)
+                                    .textContentType(.password)
+                            }
+                            
+                            Button {
+                                showPassword.toggle()
+                            } label: {
+                                Image(systemName: showPassword ? "eye.slash" : "eye")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .accessibilityLabel(showPassword ? "Hide password" : "Show password")
+                        }
                     }
                 }
                 .padding(.horizontal, 32)
@@ -159,7 +179,6 @@ struct CertificateImportView: View {
         if let pendingURL = CertificateService.shared.pendingImportURL {
             selectedFileURL = pendingURL
             selectedFileName = pendingURL.lastPathComponent
-            CertificateService.shared.pendingImportURL = nil
         }
     }
     
@@ -176,6 +195,8 @@ struct CertificateImportView: View {
         
         do {
             try await CertificateService.shared.importP12(from: url, password: password)
+            CertificateService.shared.pendingImportURL = nil
+            onImportComplete?()
             dismiss()
         } catch let error as CertificateError {
             switch error {

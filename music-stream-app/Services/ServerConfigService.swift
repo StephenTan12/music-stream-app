@@ -24,7 +24,7 @@ final class ServerConfigService {
         didSet { save() }
     }
     
-    var serverPort: Int {
+    var serverPort: Int? {
         didSet { save() }
     }
     
@@ -35,7 +35,10 @@ final class ServerConfigService {
     }
     
     var baseURL: String {
-        "\(serverProtocol)://\(serverHost):\(serverPort)"
+        if let port = serverPort {
+            return "\(serverProtocol)://\(serverHost):\(port)"
+        }
+        return "\(serverProtocol)://\(serverHost)"
     }
     
     var isCertificateRequired: Bool {
@@ -43,12 +46,13 @@ final class ServerConfigService {
     }
     
     var isReadyToConnect: Bool {
-        let hasValidConfig = !serverHost.isEmpty && serverPort > 0 && serverPort <= 65535
+        let hasValidHost = !serverHost.isEmpty
+        let hasValidPort = serverPort == nil || (serverPort! > 0 && serverPort! <= 65535)
         
         if isCertificateRequired {
-            return hasValidConfig && CertificateService.shared.isClientCertificateConfigured
+            return hasValidHost && hasValidPort && CertificateService.shared.isClientCertificateConfigured
         }
-        return hasValidConfig
+        return hasValidHost && hasValidPort
     }
     
     private init() {
@@ -56,7 +60,7 @@ final class ServerConfigService {
         
         self.serverProtocol = defaults.string(forKey: Keys.serverProtocol) ?? "http"
         self.serverHost = defaults.string(forKey: Keys.serverHost) ?? ""
-        self.serverPort = defaults.object(forKey: Keys.serverPort) as? Int ?? 8000
+        self.serverPort = defaults.object(forKey: Keys.serverPort) as? Int
         self.isConfigured = defaults.bool(forKey: Keys.serverConfigured)
     }
     
@@ -64,6 +68,10 @@ final class ServerConfigService {
         let defaults = UserDefaults.standard
         defaults.set(serverProtocol, forKey: Keys.serverProtocol)
         defaults.set(serverHost, forKey: Keys.serverHost)
-        defaults.set(serverPort, forKey: Keys.serverPort)
+        if let port = serverPort {
+            defaults.set(port, forKey: Keys.serverPort)
+        } else {
+            defaults.removeObject(forKey: Keys.serverPort)
+        }
     }
 }

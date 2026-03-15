@@ -2,7 +2,7 @@ import Foundation
 import Security
 import os
 
-final class NetworkSessionDelegate: NSObject, URLSessionDelegate {
+final class NetworkSessionDelegate: NSObject, URLSessionDelegate, URLSessionTaskDelegate, URLSessionDataDelegate {
     static let shared = NetworkSessionDelegate()
     
     private let logger = Logger(subsystem: "com.music-stream-app", category: "NetworkSessionDelegate")
@@ -11,13 +11,53 @@ final class NetworkSessionDelegate: NSObject, URLSessionDelegate {
         super.init()
     }
     
+    // MARK: - URLSessionDelegate (session-level challenges)
+    
     func urlSession(
         _ session: URLSession,
         didReceive challenge: URLAuthenticationChallenge,
         completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
     ) {
+        logger.debug("Session-level challenge: \(challenge.protectionSpace.authenticationMethod)")
+        handleChallenge(challenge, completionHandler: completionHandler)
+    }
+    
+    // MARK: - URLSessionTaskDelegate (task-level challenges)
+    
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        logger.debug("Task-level challenge: \(challenge.protectionSpace.authenticationMethod)")
+        handleChallenge(challenge, completionHandler: completionHandler)
+    }
+    
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error = error {
+            logger.error("Task completed with error: \(error.localizedDescription)")
+        } else {
+            logger.debug("Task completed successfully")
+        }
+    }
+    
+    // MARK: - URLSessionDataDelegate
+    
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        if let httpResponse = response as? HTTPURLResponse {
+            logger.debug("Received response: \(httpResponse.statusCode)")
+        }
+        completionHandler(.allow)
+    }
+    
+    // MARK: - Challenge Handling
+    
+    private func handleChallenge(
+        _ challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
         let authMethod = challenge.protectionSpace.authenticationMethod
-        logger.debug("Received authentication challenge: \(authMethod)")
         
         switch authMethod {
         case NSURLAuthenticationMethodServerTrust:
@@ -89,7 +129,34 @@ final class NetworkSessionDelegate: NSObject, URLSessionDelegate {
             return
         }
         
+        if let identity = credential.identity {
+            var cert: SecCertificate?
+            if SecIdentityCopyCertificate(identity, &cert) == errSecSuccess, let cert = cert {
+                if let summary = SecCertificateCopySubjectSummary(cert) as String? {
+                    logger.debug("Using client certificate: \(summary)")
+                }
+            }
+        }
+        
         logger.debug("Using client certificate credential")
         completionHandler(.useCredential, credential)
+    }
+    
+    // MARK: - Connection State Tracking
+    
+    func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
+        for metric in metrics.transactionMetrics {
+            if let protocol_ = metric.networkProtocolName {
+                logger.debug("Protocol: \(protocol_)")
+            }
+            if metric.isReusedConnection {
+                logger.debug("Reused connection")
+            }
+            if let secureConnectionStart = metric.secureConnectionStartDate,
+               let secureConnectionEnd = metric.secureConnectionEndDate {
+                let tlsTime = secureConnectionEnd.timeIntervalSince(secureConnectionStart)
+                logger.debug("TLS handshake time: \(tlsTime)s")
+            }
+        }
     }
 }

@@ -5,6 +5,7 @@
 
 import Foundation
 import Observation
+import os
 
 struct PaginatedSongsResponse: Codable {
     let songs: [SongDTO]
@@ -54,10 +55,14 @@ enum SongServiceError: LocalizedError {
     }
 }
 
+private let timeoutErrorCode = -1001
+
 @Observable
 @MainActor
 final class SongService {
     static let shared = SongService()
+    
+    private let logger = Logger(subsystem: "com.music-stream-app", category: "SongService")
     
     var songs: [Song] = []
     var isLoading = false
@@ -95,7 +100,7 @@ final class SongService {
         }
         
         do {
-            let (data, response) = try await AppConfig.API.urlSession.data(from: url)
+            let (data, response) = try await performRequestWithRetry(url: url)
             
             guard let httpResponse = response as? HTTPURLResponse,
                   (200...299).contains(httpResponse.statusCode) else {
@@ -123,6 +128,16 @@ final class SongService {
             error = .decodingError(decodingError.localizedDescription)
         } catch {
             NetworkMonitor.shared.isServerReachable = false
+        }
+    }
+    
+    private func performRequestWithRetry(url: URL) async throws -> (Data, URLResponse) {
+        do {
+            return try await AppConfig.API.urlSession.data(from: url)
+        } catch let nsError as NSError where nsError.code == timeoutErrorCode {
+            logger.warning("Request timed out, invalidating session and retrying: \(url.absoluteString)")
+            AppConfig.API.invalidateAuthenticatedSession()
+            return try await AppConfig.API.urlSession.data(from: url)
         }
     }
     

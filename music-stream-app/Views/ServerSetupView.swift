@@ -8,25 +8,27 @@ import SwiftUI
 struct ServerSetupView: View {
     @State private var selectedProtocol: String = "http"
     @State private var host: String = ""
-    @State private var portString: String = "8000"
+    @State private var portString: String = ""
     @State private var certificateService = CertificateService.shared
     @State private var showCertificateImport = false
     
     private var isValid: Bool {
-        let basicValid = !host.trimmingCharacters(in: .whitespaces).isEmpty &&
-            Int(portString) != nil &&
-            (Int(portString) ?? 0) > 0 &&
-            (Int(portString) ?? 0) <= 65535
+        let trimmedPort = portString.trimmingCharacters(in: .whitespaces)
+        let hasValidHost = !host.trimmingCharacters(in: .whitespaces).isEmpty
+        let hasValidPort = trimmedPort.isEmpty || (Int(trimmedPort).map { $0 > 0 && $0 <= 65535 } ?? false)
         
         if selectedProtocol == "https" {
-            return basicValid && certificateService.isClientCertificateConfigured
+            return hasValidHost && hasValidPort && certificateService.isClientCertificateConfigured
         }
-        return basicValid
+        return hasValidHost && hasValidPort
     }
     
     private var previewURL: String {
-        let port = Int(portString) ?? 8000
-        return "\(selectedProtocol)://\(host):\(port)"
+        let trimmedPort = portString.trimmingCharacters(in: .whitespaces)
+        if trimmedPort.isEmpty {
+            return "\(selectedProtocol)://\(host)"
+        }
+        return "\(selectedProtocol)://\(host):\(trimmedPort)"
     }
     
     var body: some View {
@@ -75,11 +77,11 @@ struct ServerSetupView: View {
                     }
                     
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Port")
+                        Text("Port (optional)")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         
-                        TextField("8000", text: $portString)
+                        TextField("e.g., 8000", text: $portString)
                             .textFieldStyle(.roundedBorder)
                             .keyboardType(.numberPad)
                     }
@@ -92,15 +94,16 @@ struct ServerSetupView: View {
                             
                             CertificateStatusView()
                             
-                            if !certificateService.isClientCertificateConfigured {
-                                Button {
-                                    showCertificateImport = true
-                                } label: {
-                                    Label("Import Certificate", systemImage: "plus.circle.fill")
-                                        .frame(maxWidth: .infinity)
-                                }
-                                .buttonStyle(.bordered)
+                            Button {
+                                showCertificateImport = true
+                            } label: {
+                                Label(
+                                    certificateService.isClientCertificateConfigured ? "Change Certificate" : "Add Certificate",
+                                    systemImage: "plus.circle.fill"
+                                )
+                                .frame(maxWidth: .infinity)
                             }
+                            .buttonStyle(.bordered)
                         }
                         .padding(.top, 8)
                     }
@@ -130,19 +133,16 @@ struct ServerSetupView: View {
         }
         .scrollDismissesKeyboard(.interactively)
         .background(Color(.systemBackground))
-        .sheet(isPresented: $showCertificateImport) {
-            NavigationStack {
-                CertificateImportView()
-                    .navigationTitle("Import Certificate")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .cancellationAction) {
-                            Button("Cancel") {
-                                showCertificateImport = false
-                            }
-                        }
-                    }
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Done") {
+                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                }
             }
+        }
+        .sheet(isPresented: $showCertificateImport) {
+            CertificateSelectionView()
         }
     }
     
@@ -150,7 +150,8 @@ struct ServerSetupView: View {
         let config = ServerConfigService.shared
         config.serverProtocol = selectedProtocol
         config.serverHost = host.trimmingCharacters(in: .whitespaces)
-        config.serverPort = Int(portString) ?? 8000
+        let trimmedPort = portString.trimmingCharacters(in: .whitespaces)
+        config.serverPort = trimmedPort.isEmpty ? nil : Int(trimmedPort)
         config.isConfigured = true
     }
 }
